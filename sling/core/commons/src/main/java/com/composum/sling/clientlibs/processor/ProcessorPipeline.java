@@ -1,6 +1,5 @@
 package com.composum.sling.clientlibs.processor;
 
-import com.composum.sling.clientlibs.handle.Clientlib;
 import com.composum.sling.clientlibs.service.ClientlibProcessor;
 
 import java.io.IOException;
@@ -34,11 +33,24 @@ public class ProcessorPipeline implements ClientlibProcessor {
     }
 
     @Override
-    public InputStream processContent(final Clientlib clientlib, InputStream stream, ProcessorContext context)
+    public InputStream processContent(InputStream stream, ProcessorContext context)
             throws IOException {
         for (ClientlibProcessor processor : processors) {
-            stream = processor.processContent(clientlib, stream, context);
+            stream = processor.processContent(stream, context);
         }
         return stream;
+    }
+
+    @Override
+    public String toString() {
+        StringBuffer buf = new StringBuffer();
+        buf.append("ProcessorPipeline{");
+        if (processors != null) {
+            for (ClientlibProcessor processor : processors) {
+                buf.append(processor.toString());
+            }
+        }
+        buf.append("}");
+        return buf.toString();
     }
 }

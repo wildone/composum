@@ -1,13 +1,20 @@
 package com.composum.sling.cpnl;
 
 import com.composum.sling.core.BeanContext;
-import com.composum.sling.core.SlingHandle;
+import com.composum.sling.core.util.ExpressionUtil;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.sling.api.SlingHttpServletRequest;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.apache.sling.scripting.jsp.util.TagUtil;
 
+import javax.el.ELContext;
+import javax.el.ExpressionFactory;
+import javax.el.ValueExpression;
+import javax.servlet.ServletContext;
+import javax.servlet.jsp.JspApplicationContext;
 import javax.servlet.jsp.JspException;
+import javax.servlet.jsp.JspFactory;
 import javax.servlet.jsp.JspWriter;
 import javax.servlet.jsp.PageContext;
 import javax.servlet.jsp.tagext.TagSupport;
@@ -17,11 +24,14 @@ import javax.servlet.jsp.tagext.TagSupport;
 public class CpnlTagSupport extends TagSupport {
 
     protected SlingHttpServletRequest request;
-    protected SlingHandle sling;
+    protected BeanContext context;
     protected JspWriter out;
 
     protected Resource resource;
     protected ResourceResolver resourceResolver;
+
+    private transient ExpressionUtil expressionUtil;
+
 
     /**
      * Reset all member variables to the (default) start values. Called prior
@@ -30,21 +40,25 @@ public class CpnlTagSupport extends TagSupport {
     protected void clear() {
         resource = null;
         resourceResolver = null;
-        sling = null;
+        context = null;
         out = null;
         request = null;
+        expressionUtil = null;
     }
 
     @Override
     public int doStartTag() throws JspException {
-        sling = new SlingHandle(new BeanContext.Page(pageContext));
+        context = createContext(pageContext);
         out = pageContext.getOut();
-
         request = TagUtil.getRequest(pageContext);
         resourceResolver = request.getResourceResolver();
         resource = request.getResource();
 
         return super.doStartTag();
+    }
+
+    protected BeanContext createContext(PageContext pageContext) {
+        return new BeanContext.Page(pageContext);
     }
 
     /*
@@ -70,4 +84,20 @@ public class CpnlTagSupport extends TagSupport {
         clear();
         super.release();
     }
+
+    /** Returns or creates the expressionUtil . Not null. */
+    protected com.composum.sling.core.util.ExpressionUtil getExpressionUtil() {
+        if (expressionUtil == null) {
+            expressionUtil = new ExpressionUtil(pageContext);
+        }
+        return expressionUtil;
+    }
+
+    /**
+     * evaluate an EL expression value, the value can contain @{..} expression rules which are transformed to ${..}
+     */
+    protected <T> T eval(Object value, T defaultValue) {
+        return getExpressionUtil().eval(value, defaultValue);
+    }
+
 }

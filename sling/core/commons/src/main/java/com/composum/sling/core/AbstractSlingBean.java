@@ -1,5 +1,6 @@
 package com.composum.sling.core;
 
+import com.composum.sling.core.request.DomIdentifiers;
 import com.composum.sling.core.util.LinkUtil;
 import com.composum.sling.core.util.ResourceUtil;
 import org.apache.commons.lang3.StringUtils;
@@ -55,6 +56,8 @@ public abstract class AbstractSlingBean implements SlingBean {
 
     private transient String name;
     private transient String path;
+    private transient String type;
+    private transient String domId;
     private transient String id;
     private transient String url;
 
@@ -160,6 +163,20 @@ public abstract class AbstractSlingBean implements SlingBean {
         return name;
     }
 
+    public String getType() {
+        if (type == null) {
+            type = getResource().getResourceType();
+        }
+        return type;
+    }
+
+    public String getDomId() {
+        if (domId == null) {
+            domId = DomIdentifiers.getInstance(context).getElementId(this);
+        }
+        return domId;
+    }
+
     public String getId() {
         if (id == null) {
             id = getResource().getId();
@@ -182,10 +199,10 @@ public abstract class AbstractSlingBean implements SlingBean {
      */
     public ResourceHandle getParent(String resourceType) {
         ResourceHandle result = getResource();
-        while (result.isValid() && !result.isResourceType(resourceType)) {
+        while (result != null && result.isValid() && !result.isResourceType(resourceType)) {
             result = result.getParent();
         }
-        if (!result.isValid()) {
+        if (result != null && !result.isValid()) {
             result = getParent(resourceType, getPath()); // implicit fallback to the path
         }
         return result;
@@ -230,30 +247,29 @@ public abstract class AbstractSlingBean implements SlingBean {
     }
 
     public <T> T getProperty(String key, T defaultValue) {
-        T value = resource.getContentProperty(key, defaultValue);
-        return value;
+        return resource.getContentProperty(key, defaultValue);
     }
 
     public <T> T getProperty(String key, Class<T> type) {
-        T value = resource.getContentProperty(key, type);
-        return value;
+        return resource.getContentProperty(key, type);
     }
 
     public <T> T getInherited(String key, T defaultValue) {
-        T value = resource.getInherited(key, defaultValue);
-        return value;
+        return resource.getInherited(key, defaultValue);
     }
 
     public <T> T getInherited(String key, Class<T> type) {
-        T value = resource.getInherited(key, type);
-        return value;
+        return resource.getInherited(key, type);
     }
 
     //
 
     public RequestHandle getRequest() {
         if (request == null) {
-            request = RequestHandle.use(context.getRequest());
+            SlingHttpServletRequest req = context.getRequest();
+            if (req != null){
+                request = RequestHandle.use(req);
+            }
         }
         return request;
     }
@@ -269,7 +285,7 @@ public abstract class AbstractSlingBean implements SlingBean {
     // JCR Query helpers
     //
 
-    public static interface NodeClosure {
+    public interface NodeClosure {
 
         void call(Node node) throws RepositoryException;
     }
@@ -282,7 +298,7 @@ public abstract class AbstractSlingBean implements SlingBean {
     }
 
     public <T extends AbstractSlingBean> List<T> findBeans(String queryString, Class<T> type) {
-        List<T> result = new ArrayList<T>();
+        List<T> result = new ArrayList<>();
         try {
             Constructor<T> constructor = type.getConstructor(BeanContext.class, Resource.class);
             NodeIterator iterator = findNodes(queryString);
@@ -312,6 +328,7 @@ public abstract class AbstractSlingBean implements SlingBean {
     }
 
     public NodeIterator findNodes(String queryString) throws RepositoryException {
+        //noinspection deprecation
         return findNodes(queryString, Query.XPATH);
     }
 
@@ -369,5 +386,17 @@ public abstract class AbstractSlingBean implements SlingBean {
      */
     public String getStringId() {
         return super.toString();
+    }
+
+    /**
+     * Default implementation: uses {@link #toString(StringBuilder)}.
+     *
+     * @return a string representation for debugging.
+     */
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        toString(sb);
+        return sb.toString();
     }
 }

@@ -7,15 +7,15 @@
 
     core.components = core.components || {};
 
-    (function (components) {
+    (function (components, widgets) {
 
         /**
          * the 'code-editor-widget'
-         *
          */
-        components.CodeEditorWidget = Backbone.View.extend({
+        components.CodeEditorWidget = widgets.Widget.extend({
 
             initialize: function (options) {
+                widgets.Widget.prototype.initialize.apply(this, [options]);
 
                 this.$editor = this.$('.code-editor');
                 this.$findText = this.$('.search .find-text');
@@ -110,7 +110,7 @@
             loadText: function (onSuccess) {
                 var path = this.getPath();
                 if (path) {
-                    core.ajaxGet("/bin/cpm/nodes/property.bin" + path, {
+                    core.ajaxGet("/bin/cpm/nodes/property.bin" + core.encodePath(path), {
                             contentType: 'text/plain;charset=UTF-8',
                             dataType: 'text'
                         }, _.bind(function (data) {
@@ -121,7 +121,8 @@
                             }
                         }, this),
                         _.bind(function (result) {
-                            core.alert('danger', 'Error', 'Error on loading text', result);
+                            core.alert('danger', core.i18n.get('Error'),
+                                core.i18n.get('Error on loading text'), result);
                         }, this));
                 }
             },
@@ -129,16 +130,17 @@
             saveText: function (onSuccess) {
                 var path = this.getPath();
                 if (path) {
-                    core.ajaxPut("/bin/cpm/nodes/property.bin" + path, this.ace.getValue(), {
+                    core.ajaxPut("/bin/cpm/nodes/property.update.bin" + core.encodePath(path), this.ace.getValue(), {
                         contentType: 'text/plain;charset=UTF-8',
                         dataType: 'text'
                     }, undefined, undefined, _.bind(function (result, x, y) {
-                        if (result.status == 200) {
+                        if (result.status === 200) {
                             if (_.isFunction(onSuccess)) {
                                 onSuccess(result);
                             }
                         } else {
-                            core.alert('danger', 'Error', 'Error on updating text', result);
+                            core.alert('danger', core.i18n.get('Error'),
+                                core.i18n.get('Error on updating text'), result);
                         }
                     }, this));
                 }
@@ -208,6 +210,8 @@
                 this.ace.redo();
             }
         });
+
+        widgets.register('.widget.code-editor-widget', components.CodeEditorWidget);
 
         components.CodeEditorDialog = components.Dialog.extend({
 
@@ -279,7 +283,7 @@
                 this.show(_.bind(function () {
                     // initialize the editor instance
                     this.editor.initEditor(initAfterLoad);
-                    this.editor.setSaveCommand( _.bind(function (editor) {
+                    this.editor.setSaveCommand(_.bind(function (editor) {
                         this.saveAndContinue();
                     }, this));
                 }, this));
@@ -291,6 +295,6 @@
             }
         });
 
-    })(core.components);
+    })(core.components, window.widgets);
 
 })(window.core);

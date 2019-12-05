@@ -1,13 +1,18 @@
 package com.composum.sling.core.util;
 
+import com.composum.sling.core.JcrResource;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.sling.api.SlingConstants;
+import org.apache.jackrabbit.JcrConstants;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.apache.sling.api.resource.ValueMap;
 import org.apache.sling.jcr.base.util.AccessControlUtil;
+import org.slf4j.Logger;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import javax.jcr.Binary;
+import javax.jcr.ItemNotFoundException;
 import javax.jcr.Node;
 import javax.jcr.PathNotFoundException;
 import javax.jcr.Property;
@@ -16,44 +21,118 @@ import javax.jcr.Session;
 import javax.jcr.nodetype.NodeType;
 import javax.jcr.security.AccessControlManager;
 import javax.jcr.security.Privilege;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import static org.slf4j.LoggerFactory.getLogger;
+
 /**
- *
+ * A collection of loads of utilities dealing with {@link Resource}s.
  */
-public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
+public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil implements CoreConstants {
 
-    public static final String PROP_RESOURCE_TYPE =
-            SlingConstants.NAMESPACE_PREFIX + ":" + SlingConstants.PROPERTY_RESOURCE_TYPE;
-    public static final String PROP_RESOURCE_SUPER_TYPE =
-            SlingConstants.NAMESPACE_PREFIX + ":" + SlingConstants.PROPERTY_RESOURCE_SUPER_TYPE;
-    public static final String CONTENT_NODE = "jcr:content";
+    private static final Logger LOG = getLogger(ResourceUtil.class);
 
-    public static final String TYPE_OAKINDEX = "oak:QueryIndexDefinition";
-    public static final String TYPE_FILE = "nt:file";
-    public static final String TYPE_LINKED_FILE = "nt:linkedFile";
-    public static final String TYPE_RESOURCE = "nt:resource";
-    public static final String TYPE_UNSTRUCTURED = "nt:unstructured";
+    /**
+     * retrieves all children of one of a type from a type set (node type or resource type)
+     */
+    public static List<Resource> getChildrenByType(final Resource resource, List<String> typeSet) {
+        final ArrayList<Resource> children = new ArrayList<>();
+        if (resource != null) {
+            for (final Resource child : resource.getChildren()) {
+                for (String type : typeSet) {
+                    if (isResourceType(child, type)) {
+                        children.add(child);
+                        break;
+                    }
+                }
+            }
+        }
+        return children;
+    }
 
-    public static final String TYPE_LOCKABLE = "mix:lockable";
-    public static final String TYPE_ORDERABLE = "mix:orderable";
-    public static final String TYPE_REFERENCEABLE = "mix:referenceable";
+    /**
+     * retrieves all children of a type (node type or resource type)
+     */
+    public static List<Resource> getChildrenByType(final Resource resource, String type) {
+        final ArrayList<Resource> children = new ArrayList<>();
+        if (resource != null) {
+            for (final Resource child : resource.getChildren()) {
+                if (isResourceType(child, type)) {
+                    children.add(child);
+                }
+            }
+        }
+        return children;
+    }
 
-    public static final String PROP_UUID = "jcr:uuid";
-    public static final String PROP_TITLE = "jcr:title";
-    public static final String PROP_DESCRIPTION = "jcr:description";
+    /**
+     * retrieves all children of a sling:resourceType
+     */
+    public static List<Resource> getChildrenByResourceType(final Resource resource, String resourceType) {
+        final ArrayList<Resource> children = new ArrayList<>();
+        if (resource != null) {
+            for (final Resource child : resource.getChildren()) {
+                if (child.isResourceType(resourceType)) {
+                    children.add(child);
+                }
+            }
+        }
+        return children;
+    }
 
-    public static final String PROP_DATA = "jcr:data";
-    public static final String PROP_MIME_TYPE = "jcr:mimeType";
-    public static final String PROP_ENCODING = "jcr:encoding";
-    public static final String PROP_PRIMARY_TYPE = "jcr:primaryType";
-    public static final String PROP_JCR_CONTENT = "jcr:content";
-    public static final String PROP_LAST_MODIFIED = "jcr:lastModified";
-    public static final String PROP_FILE_REFERENCE = "fileReference";
+    public static int getIndexOfSameType(Resource resource) {
+        if (resource != null) {
+            String name = resource.getName();
+            String type = resource.getResourceType();
+            Resource parent = resource.getParent();
+            if (parent != null) {
+                int index = 0;
+                for (Resource child : parent.getChildren()) {
+                    if (type == null || child.isResourceType(type)) {
+                        if (name.equals(child.getName())) {
+                            return index;
+                        }
+                        index++;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    public static Resource getNextOfSameType(Resource resource, boolean wrapAround) {
+        if (resource != null) {
+            String name = resource.getName();
+            String type = resource.getResourceType();
+            Resource parent = resource.getParent();
+            if (parent != null) {
+                boolean returnNext = false;
+                for (Resource child : parent.getChildren()) {
+                    if (type == null || child.isResourceType(type)) {
+                        if (returnNext) {
+                            return child;
+                        }
+                        if (name.equals(child.getName())) {
+                            returnNext = true;
+                        }
+                    }
+                }
+                if (returnNext && wrapAround) {
+                    for (Resource child : parent.getChildren()) {
+                        if (type == null || child.isResourceType(type)) {
+                            return child;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
 
     public static String getNameExtension(Resource resource) {
-        String extension = null;
+        String extension;
         String name = resource.getName();
         if (ResourceUtil.CONTENT_NODE.equals(name)) {
             name = resource.getParent().getName();
@@ -63,21 +142,58 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
         return extension;
     }
 
-    public static boolean isResourceType(Resource resource, String resourceType) {
+    /**
+     * retrieves the primary type of the resources node
+     */
+    public static String getPrimaryType(Resource resource) {
+        String result = null;
         if (resource != null) {
-            if (resource.isResourceType(resourceType)) {
-                return true;
+            if (resource instanceof JcrResource) {
+                // use the resource itself if it implements the JcrResource interface (maybe a version of a resource)
+                result = ((JcrResource) resource).getPrimaryType();
             } else {
-                try {
-                    final Node node = resource.adaptTo(Node.class);
-                    return node != null && node.isNodeType(resourceType);
-                } catch (RepositoryException e) {
-                    return false;
+                Node node = resource.adaptTo(Node.class);
+                if (node != null) {
+                    try {
+                        NodeType type = node.getPrimaryNodeType();
+                        if (type != null) {
+                            result = type.getName();
+                        }
+                    } catch (RepositoryException ignore) {
+                    }
+                }
+                if (result == null) {
+                    ValueMap values = resource.adaptTo(ValueMap.class);
+                    if (values != null) {
+                        result = values.get(JcrConstants.JCR_PRIMARYTYPE, (String) null);
+                    }
                 }
             }
-        } else {
-            return false;
         }
+        return result;
+    }
+
+    /**
+     * Checks whether any of the resource's primary type, super types, sling resource type and supertypes is {resourceType}.
+     */
+    public static boolean isResourceType(@Nullable Resource resource, String resourceType) {
+        return (resource != null && (resource.isResourceType(resourceType)
+                || isPrimaryType(resource, resourceType) || isNodeType(resource, resourceType)));
+    }
+
+    public static boolean isPrimaryType(Resource resource, String primaryType) {
+        return (primaryType.equals(getPrimaryType(resource)));
+    }
+
+    public static boolean isNodeType(Resource resource, String primaryType) {
+        if (resource != null) {
+            try {
+                final Node node = resource.adaptTo(Node.class);
+                return node != null && node.isNodeType(primaryType);
+            } catch (RepositoryException ignore) {
+            }
+        }
+        return false;
     }
 
     public static Resource getResourceType(Resource resource) {
@@ -159,6 +275,7 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
             throws RepositoryException {
         Resource resource = resolver.getResource(path);
         if (resource == null) {
+            path = normalize(path);
             int lastPathSegment = path.lastIndexOf('/');
             String parentPath = "/";
             String name = path;
@@ -206,6 +323,27 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
     }
 
     /**
+     * Returns an array of two elements for a nontrivial path (containing /): the parent path and the name.
+     * The parent of a toplevel node like "/var" is returned as "/".
+     * If it doesn't contain a / , the result has null in the first place.
+     */
+    @Nonnull
+    public static String[] splitPathAndName(@Nonnull String path) {
+        String[] result = new String[2];
+        int nameSeparator = path.lastIndexOf('/');
+        if (nameSeparator >= 0) {
+            result[0] = path.substring(0, nameSeparator);
+            result[1] = path.substring(nameSeparator + 1);
+            if (result[0].isEmpty()) // absolute path at toplevel, like /var
+                result[0] = "/";
+        } else {
+            result[0] = null; // unclear what to return here - null or "" .
+            result[1] = path;
+        }
+        return result;
+    }
+
+    /**
      * Retrieves the resources child resource, creates this child if not existing.
      *
      * @param resource     the resource to extend
@@ -232,11 +370,6 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
 
     /**
      * Checks the access control policies for enabled changes (node creation and property change).
-     *
-     * @param resource
-     * @param relPath
-     * @return
-     * @throws RepositoryException
      */
     public static boolean isWriteEnabled(Resource resource, String relPath) throws RepositoryException {
 
@@ -317,7 +450,7 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
                     }
                 }
             } catch (RepositoryException e) {
-                e.printStackTrace();
+                LOG.error(e.getMessage(), e);
             }
         }
         return false;
@@ -345,4 +478,34 @@ public class ResourceUtil extends org.apache.sling.api.resource.ResourceUtil {
     public static Binary getBinaryData(Resource resource) {
         return PropertyUtil.getBinaryData(resource.adaptTo(Node.class));
     }
+
+    /** Finds a mix:referenceable by its jcr:uuid. */
+    @Nullable
+    public static Resource getByUuid(@Nonnull ResourceResolver resolver, @Nullable String uuid) throws RepositoryException {
+        if (StringUtils.isBlank(uuid)) return null;
+        Resource result = null;
+        Session session = resolver.adaptTo(Session.class);
+        if (session != null) {
+            try {
+                Node node = session.getNodeByIdentifier(uuid);
+                result = resolver.getResource(node.getPath());
+            } catch (ItemNotFoundException e) { // OK.
+                LOG.debug("Node not found by uuid {}", uuid);
+            }
+        } else {
+            throw new RepositoryException("Cannot get JCR Session from resolver " + resolver);
+        }
+        return result;
+    }
+
+    /** Finds the referenced node from a property of type REFERENCE, WEAKREFERENCE or PATH or convertable to that. */
+    @Nullable
+    public static Resource getReferredResource(@Nullable Resource propertyResource) throws RepositoryException {
+        if (propertyResource == null) return null;
+        Property property = propertyResource.adaptTo(Property.class);
+        Node node = property != null ? property.getNode() : null;
+        String path = node != null ? node.getPath() : null;
+        return path != null ? propertyResource.getResourceResolver().getResource(path) : null;
+    }
+
 }

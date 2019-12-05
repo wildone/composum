@@ -12,16 +12,12 @@
       </button>
       <div id="composum-logo" class="navbar-brand">
         <a href="${cpn:url(slingRequest,'/libs/composum/nodes/console/content')}">
-          <cpn:clientlib path="/libs/composum/nodes/console/page/images/composum-nodes-logo-on-black.png"/>
+          <cpn:image src="/libs/composum/nodes/console/page/images/composum-nodes-logo-on-black.png" alt=""/>
         </a>
       </div>
     </div>
     <nav class="collapse navbar-collapse bs-navbar-collapse" role="navigation">
-      <ul class="nav navbar-nav">
-        <c:forEach items="${status.consoles}" var="console">
-          <li class="nav-item ${console.name} link"><a href="${console.url}"${console.linkAttributes}>${console.label}</a></li>
-        </c:forEach>
-      </ul>
+      <sling:call script="consoles.jsp"/>
       <ul class="system nav navbar-nav navbar-right">
         <li>
           <a class="nav-user-status"><em>${status.currentUser}</em></a>

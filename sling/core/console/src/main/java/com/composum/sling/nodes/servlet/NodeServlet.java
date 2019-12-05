@@ -1,41 +1,53 @@
 package com.composum.sling.nodes.servlet;
 
-import com.composum.sling.nodes.NodesConfiguration;
 import com.composum.sling.core.ResourceHandle;
 import com.composum.sling.core.config.FilterConfiguration;
 import com.composum.sling.core.exception.ParameterValidationException;
 import com.composum.sling.core.filter.ResourceFilter;
 import com.composum.sling.core.filter.StringFilter;
 import com.composum.sling.core.mapping.MappingRules;
+import com.composum.sling.core.resource.SyntheticQueryResult;
 import com.composum.sling.core.servlet.AbstractServiceServlet;
 import com.composum.sling.core.servlet.NodeTreeServlet;
 import com.composum.sling.core.servlet.ServletOperation;
 import com.composum.sling.core.servlet.ServletOperationSet;
+import com.composum.sling.core.util.I18N;
 import com.composum.sling.core.util.JsonUtil;
 import com.composum.sling.core.util.MimeTypeUtil;
 import com.composum.sling.core.util.RequestUtil;
 import com.composum.sling.core.util.ResourceUtil;
 import com.composum.sling.core.util.ResponseUtil;
+import com.composum.sling.cpnl.CpnlElFunctions;
+import com.composum.sling.nodes.NodesConfiguration;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
-import org.apache.commons.lang3.StringEscapeUtils;
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.felix.scr.annotations.Reference;
 import org.apache.felix.scr.annotations.ReferenceCardinality;
 import org.apache.felix.scr.annotations.ReferencePolicy;
 import org.apache.felix.scr.annotations.sling.SlingServlet;
+import org.apache.jackrabbit.JcrConstants;
 import org.apache.sling.api.SlingHttpServletRequest;
 import org.apache.sling.api.SlingHttpServletResponse;
+import org.apache.sling.api.request.RequestDispatcherOptions;
 import org.apache.sling.api.request.RequestParameter;
 import org.apache.sling.api.request.RequestParameterMap;
 import org.apache.sling.api.request.RequestPathInfo;
+import org.apache.sling.api.resource.ModifiableValueMap;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceResolver;
+import org.apache.sling.api.servlets.HttpConstants;
+import org.apache.tika.mime.MimeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.jcr.Binary;
+import javax.jcr.ItemExistsException;
 import javax.jcr.Node;
 import javax.jcr.NodeIterator;
+import javax.jcr.PathNotFoundException;
+import javax.jcr.Property;
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
 import javax.jcr.UnsupportedRepositoryOperationException;
@@ -46,8 +58,10 @@ import javax.jcr.nodetype.NodeType;
 import javax.jcr.query.Query;
 import javax.jcr.query.QueryManager;
 import javax.jcr.query.QueryResult;
+import javax.servlet.RequestDispatcher;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletResponse;
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -57,13 +71,18 @@ import java.io.Reader;
 import java.io.Writer;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static com.composum.sling.core.mapping.MappingRules.CHARSET;
 
 /**
  * The JCR nodes service servlet to walk though and modify the entire hierarchy.
@@ -177,12 +196,12 @@ public class NodeServlet extends NodeTreeServlet {
     // Servlet operations
     //
 
-    public enum Extension {json, html, lock, groovy}
+    public enum Extension {json, html, lock, groovy, bin}
 
     public enum Operation {
         create, copy, move, reorder, delete, toggle,
         tree, reference, mixins, resolve, typeahead,
-        query, queryTemplates, filters, map
+        query, filters, map, load, download, fileUpdate
     }
 
     protected ServletOperationSet<Extension, Operation> operations = new ServletOperationSet<>(Extension.json);
@@ -231,20 +250,26 @@ public class NodeServlet extends NodeTreeServlet {
                 Operation.query, new JsonQueryOperation());
         operations.setOperation(ServletOperationSet.Method.GET, Extension.html,
                 Operation.query, new HtmlQueryOperation());
-        operations.setOperation(ServletOperationSet.Method.GET, Extension.json,
-                Operation.queryTemplates, new GetQueryTemplates());
+        operations.setOperation(ServletOperationSet.Method.GET, Extension.bin,
+                Operation.load, new LoadBinaryOperation());
+        operations.setOperation(ServletOperationSet.Method.GET, Extension.bin,
+                Operation.download, new DownloadBinaryOperation());
 
         // POST
         operations.setOperation(ServletOperationSet.Method.POST, Extension.json,
                 Operation.map, new MapPostOperation());
         operations.setOperation(ServletOperationSet.Method.POST, Extension.json,
                 Operation.create, new CreateOperation());
+        operations.setOperation(ServletOperationSet.Method.POST, Extension.bin,
+                Operation.query, new ExportQueryOperation());
         operations.setOperation(ServletOperationSet.Method.POST, Extension.json,
                 Operation.copy, new CopyOperation());
         operations.setOperation(ServletOperationSet.Method.POST, Extension.json,
                 Operation.move, new MoveOperation());
         operations.setOperation(ServletOperationSet.Method.POST, Extension.lock,
                 Operation.toggle, new ToggleLockOperation());
+        operations.setOperation(ServletOperationSet.Method.POST, Extension.json,
+                Operation.fileUpdate, new UpdateFileOperation());
 
         // PUT
         operations.setOperation(ServletOperationSet.Method.PUT, Extension.json,
@@ -272,8 +297,7 @@ public class NodeServlet extends NodeTreeServlet {
                          ResourceHandle resource)
                 throws ServletException, IOException {
 
-            response.setContentType(MappingRules.CHARSET.name());
-            response.setContentType("text/html;charset=" + MappingRules.CHARSET.name());
+            response.setContentType("text/html;charset=" + CHARSET); // XSS? - checked (2019-05-04)
             Writer writer = response.getWriter();
             response.setStatus(HttpServletResponse.SC_OK);
 
@@ -310,7 +334,7 @@ public class NodeServlet extends NodeTreeServlet {
      * the pattern to check for a XPATH query and their simplified variation
      */
     public static final Pattern XPATH_QUERY = Pattern.compile(
-            "^((/jcr:root)?/[^ \\(\\[]*)( +([^ /\\(\\[]+) *|(.*))$"
+            "^((/jcr:root)?/[^ (\\[]*)( +([^ /(\\[]+) *|(.*))$"
     );
 
     /**
@@ -318,7 +342,7 @@ public class NodeServlet extends NodeTreeServlet {
      */
     public static final Pattern WORD_QUERY = Pattern.compile("^ *([^ /]+) *$");
 
-    protected class JsonQueryOperation implements ServletOperation {
+    protected abstract class AbstractQueryOperation implements ServletOperation {
 
         @Override
         public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response,
@@ -326,7 +350,7 @@ public class NodeServlet extends NodeTreeServlet {
                 throws ServletException, IOException {
 
             String queryString = RequestUtil.getParameter(request, PARAM_QUERY, "");
-            String queryLang = Query.XPATH;
+            @SuppressWarnings("deprecation") String queryLang = Query.XPATH;
 
             String text;
             // check for a X-PATH rule (starts with a path)
@@ -366,7 +390,7 @@ public class NodeServlet extends NodeTreeServlet {
                     QueryResult result = query.execute();
 
                     ResourceFilter filter = getNodeFilter(request);
-                    writeQueryResult(response, queryString, result, filter, resolver);
+                    writeQueryResult(request, response, queryString, result, filter, resolver);
 
                 } catch (RepositoryException rex) {
                     LOG.error(rex.getMessage(), rex);
@@ -398,13 +422,30 @@ public class NodeServlet extends NodeTreeServlet {
             }
         }
 
-        protected void writeQueryResult(SlingHttpServletResponse response, String queryString, QueryResult result,
+        protected abstract void writeQueryResult(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                                                 String queryString, QueryResult result,
+                                                 ResourceFilter filter, ResourceResolver resolver)
+                throws RepositoryException, ServletException, IOException;
+
+        protected void writeError(SlingHttpServletResponse response, String queryString, Exception ex)
+                throws IOException {
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST,
+                    "query: '" + CpnlElFunctions.text(queryString) + "' (" + ex.getMessage() + ")"); // XSS? - checked (2019-05-04)
+        }
+    }
+
+    protected class JsonQueryOperation extends AbstractQueryOperation {
+
+        @Override
+        protected void writeQueryResult(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                                        String queryString, QueryResult result,
                                         ResourceFilter filter, ResourceResolver resolver)
                 throws RepositoryException, IOException {
 
             JsonWriter writer = ResponseUtil.getJsonWriter(response);
             response.setStatus(HttpServletResponse.SC_OK);
 
+            TreeNodeStrategy nodeStrategy = new DefaultTreeNodeStrategy(getNodeFilter(request));
             NodeIterator iterator = result.getNodes();
 
             writer.beginArray();
@@ -416,7 +457,7 @@ public class NodeServlet extends NodeTreeServlet {
                 ResourceHandle resource = ResourceHandle.use(resolver.getResource(node.getPath()));
                 if (resource.isValid() && accept(filter, resource)) {
                     writer.beginObject();
-                    String type = writeNodeIdentifiers(writer, resource, LabelType.name, false);
+                    String type = writeNodeIdentifiers(writer, nodeStrategy, resource, LabelType.name, false);
                     writeNodeJcrState(writer, resource);
                     writer.endObject();
                     count++;
@@ -425,32 +466,28 @@ public class NodeServlet extends NodeTreeServlet {
             writer.endArray();
 
             writer.name("summary").beginObject();
-            writer.name("query").value(queryString);
+            writer.name("query").value(CpnlElFunctions.script(queryString)); // XSS? - checked (2019-05-04)
             writer.name("count").value(count);
             writer.name("limit").value(nodesConfig.getQueryResultLimit());
             writer.endObject();
 
             writer.endObject();
         }
-
-
-        protected void writeError(SlingHttpServletResponse response, String queryString, Exception ex)
-                throws IOException {
-            response.sendError(HttpServletResponse.SC_BAD_REQUEST,
-                    "query: '" + queryString + "' (" + ex.getMessage() + ")");
-        }
     }
 
-    protected class HtmlQueryOperation extends JsonQueryOperation {
+    protected class HtmlQueryOperation extends AbstractQueryOperation {
 
         @Override
-        protected void writeQueryResult(SlingHttpServletResponse response, String queryString, QueryResult result,
+        protected void writeQueryResult(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                                        String queryString, QueryResult result,
                                         ResourceFilter filter, ResourceResolver resolver)
                 throws RepositoryException, IOException {
 
             PrintWriter writer = response.getWriter();
             response.setStatus(HttpServletResponse.SC_OK);
+            response.setContentType("text/html;charset=" + CHARSET); // XSS? - checked (2019-05-04)
 
+            TreeNodeStrategy nodeStrategy = new DefaultTreeNodeStrategy(getNodeFilter(request));
             NodeIterator iterator = result.getNodes();
 
             writer.append("<tbody>");
@@ -484,17 +521,17 @@ public class NodeServlet extends NodeTreeServlet {
                     writer.append("<tr class=\"").append(classes.toString().trim())
                             .append("\" data-path=\"").append(path)
                             .append("\">");
-                    writer.append("<td class=\"icon\" data-type=\"").append(getTypeKey(resource))
+                    writer.append("<td class=\"icon\" data-type=\"").append(nodeStrategy.getTypeKey(resource))
                             .append("\"><span></span></td>");
                     writer.append("<td class=\"id\">").append(resource.getId()).append("</td>");
                     writer.append("<td class=\"name\">")
-                            .append(StringEscapeUtils.escapeHtml4(resource.getName())).append("</td>");
+                            .append(CpnlElFunctions.text(resource.getName())).append("</td>");
                     writer.append("<td class=\"text\">")
-                            .append(StringEscapeUtils.escapeHtml4(getNodeLabel(resource, LabelType.title)))
+                            .append(CpnlElFunctions.text(getNodeLabel(resource, LabelType.title)))
                             .append("</td>");
                     writer.append("<td class=\"path\"><a href=\"")
-                            .append(StringEscapeUtils.escapeHtml4(path)).append("\">")
-                            .append(StringEscapeUtils.escapeHtml4(path)).append("</a></td>");
+                            .append(CpnlElFunctions.text(path)).append("\">")
+                            .append(CpnlElFunctions.text(path)).append("</a></td>");
                     writer.append("<td class=\"type\">").append(resource.getPrimaryType()).append("</td>");
                     writer.append("</tr>");
                     count++;
@@ -512,15 +549,15 @@ public class NodeServlet extends NodeTreeServlet {
         }
 
         protected void writeSummary(String queryString, String message,
-                                    PrintWriter writer, String cssClasses)
-                throws IOException {
-            writer.append("<tr class=\"" + cssClasses + "\">");
+                                    PrintWriter writer, String cssClasses) {
+            writer.append("<tr class=\"").append(cssClasses).append("\">");
             writer.append("<td class=\"icon\" data-type=\"summary\" rowspan=\"2\"><span></span></td>");
-            writer.append("<td class=\"message\" colspan=\"5\">").append(message)
-                    .append("<br/>query: '").append(queryString).append("'</td>");
+            writer.append("<td class=\"message\" colspan=\"5\">").append(CpnlElFunctions.text(message))
+                    .append("<br/>query: '").append(CpnlElFunctions.text(queryString)).append("'</td>"); // XSS! (2019-05-04)
             writer.append("</tr>");
         }
 
+        @Override
         protected void writeError(SlingHttpServletResponse response, String queryString, Exception ex)
                 throws IOException {
             PrintWriter writer = response.getWriter();
@@ -530,19 +567,25 @@ public class NodeServlet extends NodeTreeServlet {
         }
     }
 
-    //
-    // Query templates
-    //
-
-    public class GetQueryTemplates implements ServletOperation {
+    protected class ExportQueryOperation extends AbstractQueryOperation {
 
         @Override
-        public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response, ResourceHandle resource)
+        protected void writeQueryResult(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                                        String queryString, QueryResult result,
+                                        ResourceFilter filter, ResourceResolver resolver)
                 throws ServletException, IOException {
 
-            JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
-            response.setStatus(HttpServletResponse.SC_OK);
-            JsonUtil.writeJsonArray(jsonWriter, nodesConfig.getQueryTemplates());
+            String rendererType = request.getParameter("export");
+
+            String syntheticPath = "/libs/composum/nodes/browser/query/export";
+            SyntheticQueryResult resultResource = new SyntheticQueryResult(resolver, syntheticPath, result, filter, rendererType);
+            resultResource.putValue("query", queryString);
+
+            RequestDispatcherOptions options = new RequestDispatcherOptions();
+            options.setForceResourceType(rendererType);
+
+            RequestDispatcher dispatcher = request.getRequestDispatcher(resultResource, options);
+            dispatcher.forward(request, response);
         }
     }
 
@@ -582,6 +625,7 @@ public class NodeServlet extends NodeTreeServlet {
     protected class ReferenceOperation implements ServletOperation {
 
         @Override
+        @SuppressWarnings("Duplicates")
         public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response,
                          ResourceHandle resource)
                 throws ServletException, IOException {
@@ -604,13 +648,13 @@ public class NodeServlet extends NodeTreeServlet {
 
                         resource = ResourceHandle.use(nodeResource);
 
-                        ResourceFilter filter = getNodeFilter(request);
+                        TreeNodeStrategy strategy = new DefaultTreeNodeStrategy(getNodeFilter(request));
                         LabelType labelType = RequestUtil.getParameter(request, PARAM_LABEL,
                                 RequestUtil.getSelector(request, LabelType.name));
 
                         JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
                         response.setStatus(HttpServletResponse.SC_OK);
-                        writeJsonNode(jsonWriter, filter, resource, labelType, false);
+                        writeJsonNode(jsonWriter, strategy, resource, labelType, false);
 
                     } else {
                         response.sendError(HttpServletResponse.SC_NOT_FOUND,
@@ -630,6 +674,7 @@ public class NodeServlet extends NodeTreeServlet {
     protected class ResolveOperation implements ServletOperation {
 
         @Override
+        @SuppressWarnings("Duplicates")
         public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response,
                          ResourceHandle resource)
                 throws ServletException, IOException {
@@ -654,13 +699,13 @@ public class NodeServlet extends NodeTreeServlet {
                 if (!ResourceUtil.isNonExistingResource(target)) {
                     ResourceHandle handle = ResourceHandle.use(target);
 
-                    ResourceFilter filter = getNodeFilter(request);
+                    TreeNodeStrategy strategy = new DefaultTreeNodeStrategy(getNodeFilter(request));
                     LabelType labelType = RequestUtil.getParameter(request, PARAM_LABEL,
                             RequestUtil.getSelector(request, LabelType.name));
 
                     JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
                     response.setStatus(HttpServletResponse.SC_OK);
-                    writeJsonNode(jsonWriter, filter, handle, labelType, false);
+                    writeJsonNode(jsonWriter, strategy, handle, labelType, false);
 
                 } else {
                     response.sendError(HttpServletResponse.SC_NOT_FOUND,
@@ -726,7 +771,7 @@ public class NodeServlet extends NodeTreeServlet {
                          ResourceHandle resource)
                 throws ServletException, IOException {
 
-            Node node = null;
+            Node node;
             if (!resource.isValid() || (node = resource.adaptTo(Node.class)) == null) {
                 response.setStatus(HttpServletResponse.SC_NOT_FOUND);
                 return;
@@ -752,9 +797,123 @@ public class NodeServlet extends NodeTreeServlet {
         }
     }
 
+    protected class LoadBinaryOperation implements ServletOperation {
+
+        @Override
+        public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                         ResourceHandle resource)
+                throws ServletException, IOException {
+
+            Binary binary = ResourceUtil.getBinaryData(resource);
+            if (binary == null) {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                return;
+            }
+
+            try {
+                prepareResponse(response, resource);
+
+                response.setContentLength((int) binary.getSize());
+                response.setStatus(HttpServletResponse.SC_OK);
+
+                try (InputStream input = binary.getStream();
+                     BufferedInputStream buffered = new BufferedInputStream(input)) {
+                    IOUtils.copy(buffered, response.getOutputStream());
+                }
+
+            } catch (RepositoryException ex) {
+                LOG.error(ex.getMessage(), ex);
+                response.sendError(HttpServletResponse.SC_BAD_REQUEST, ex.getMessage());
+            } finally {
+                binary.dispose();
+            }
+        }
+
+        protected void prepareResponse(SlingHttpServletResponse response, ResourceHandle resource) {
+            MimeType mimeType = MimeTypeUtil.getMimeType(resource);
+            if (mimeType != null) {
+                response.setContentType(mimeType.toString());
+            }
+        }
+    }
+
+    protected class DownloadBinaryOperation extends LoadBinaryOperation {
+
+        @Override
+        @SuppressWarnings("Duplicates")
+        protected void prepareResponse(SlingHttpServletResponse response, ResourceHandle resource) {
+            super.prepareResponse(response, resource);
+
+            String filename = MimeTypeUtil.getFilename(resource, null);
+            if (StringUtils.isNotBlank(filename)) {
+                response.setHeader("Content-Disposition", "inline; filename=" + filename);
+            }
+
+            Calendar lastModified = resource.getProperty(com.composum.sling.core.util.ResourceUtil.PROP_LAST_MODIFIED, Calendar.class);
+            if (lastModified != null) {
+                response.setDateHeader(HttpConstants.HEADER_LAST_MODIFIED, lastModified.getTimeInMillis());
+            }
+        }
+    }
+
     //
     // Change Operations
     //
+
+    /**
+     * The 'fileUpdate' via POST (multipart form) implementation expects:
+     * <ul>
+     * <li>the 'path' parameter with the path of the new nodes parent</li>
+     * <li>the 'file' part (form element / parameter) with the binary content (optional)</li>
+     * </ul>
+     */
+    protected class UpdateFileOperation implements ServletOperation {
+
+        @Override
+        public void doIt(SlingHttpServletRequest request, SlingHttpServletResponse response,
+                         ResourceHandle resource)
+                throws RepositoryException, IOException {
+
+            Resource content = resource;
+
+            // use resource as content if name is always 'jcr:content' else use child 'jcr:content'
+            if (resource.isValid() && (JcrConstants.JCR_CONTENT.equals(content.getName()) ||
+                    (content = resource.getChild(JcrConstants.JCR_CONTENT)) != null)) {
+
+                NodeParameters params = getNodeParameters(request);
+                ModifiableValueMap values = content.adaptTo(ModifiableValueMap.class);
+
+                ResourceResolver resolver = request.getResourceResolver();
+                RequestParameterMap parameters = request.getRequestParameterMap();
+
+                Property property = null;
+                RequestParameter file = parameters.getValue(AbstractServiceServlet.PARAM_FILE);
+                if (file != null) {
+                    InputStream input = file.getInputStream();
+                    values.put(JcrConstants.JCR_DATA, input);
+                }
+
+                if (RequestUtil.getParameter(request, "adjustLastModified", Boolean.FALSE)) {
+                    GregorianCalendar now = new GregorianCalendar();
+                    now.setTime(new Date());
+                    values.put(JcrConstants.JCR_LASTMODIFIED, now);
+                    values.put(JcrConstants.JCR_LASTMODIFIED + "By", resolver.getUserID());
+                }
+
+                resolver.commit();
+
+                JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
+                writeJsonNode(jsonWriter, MappingRules.DEFAULT_TREE_NODE_STRATEGY, resource, LabelType.name, false);
+
+            } else {
+                response.sendError(HttpServletResponse.SC_BAD_REQUEST, "no valid file resource '" + resource.getPath() + "'");
+            }
+        }
+
+        public NodeParameters getNodeParameters(SlingHttpServletRequest request) {
+            return getFormParameters(request);
+        }
+    }
 
     protected class ToggleLockOperation implements ServletOperation {
 
@@ -818,19 +977,53 @@ public class NodeServlet extends NodeTreeServlet {
                 newPath += name;
 
                 if (NODE_PATH_PATTERN.matcher(newPath).matches()) {
+                    Session session = node.getSession();
 
                     String oldPath = node.getPath();
                     Node oldParentNode = node.getParent();
-                    Integer index = params.index;
-                    if (index == null && oldParentNode != null && params.path.equals(oldParentNode.getPath())) {
-                        // preserve index in case of a simple rename
-                        NodeIterator nodes = oldParentNode.getNodes();
-                        for (index = 0; nodes.hasNext() && !oldPath.equals(nodes.nextNode().getPath()); index++) ;
+                    Node newParentNode = session.getNode(params.path);
+
+                    String beforeName = null;
+                    if (StringUtils.isNotBlank(params.before)) {
+                        beforeName = params.before;
+                        if (NODE_PATH_PATTERN.matcher(beforeName).matches()) {
+                            beforeName = null;
+                            try {
+                                Node before = session.getNode(params.before);
+                                beforeName = before.getName();
+                            } catch (PathNotFoundException ex) {
+                                LOG.error(ex.toString());
+                            }
+                        }
+                    }
+                    Integer index = null;
+                    if (beforeName == null && (index = params.index()) != null && index >= 0) {
+                        NodeIterator siblingsIterator = newParentNode.getNodes();
+                        for (int i = 0; i < index && siblingsIterator.hasNext(); ) {
+                            if (!siblingsIterator.nextNode().getPath().equals(oldPath)) {
+                                i++; // skip the node itself by index count
+                            }
+                        }
+                        if (siblingsIterator.hasNext()) {
+                            beforeName = siblingsIterator.nextNode().getName();
+                        }
+                    }
+                    if (beforeName == null && index == null && oldParentNode != null
+                            && params.path.equals(oldParentNode.getPath())) {
+                        // preserve position in case of a simple rename
+                        NodeIterator siblingsIterator = oldParentNode.getNodes();
+                        while (siblingsIterator.hasNext()) {
+                            Node sibling = siblingsIterator.nextNode();
+                            if (sibling.getPath().equals(oldPath)) {
+                                if (siblingsIterator.hasNext()) {
+                                    beforeName = siblingsIterator.nextNode().getName();
+                                }
+                                break;
+                            }
+                        }
                     }
 
                     boolean changesMade = false;
-
-                    Session session = node.getSession();
                     if (!oldPath.equals(newPath)) {
                         session.move(oldPath, newPath);
                         changesMade = true;
@@ -841,26 +1034,13 @@ public class NodeServlet extends NodeTreeServlet {
 
                     if (newResource.isValid()) {
 
-                        if (index != null && index >= 0) {
-
-                            Node parentNode = session.getNode(params.path);
-                            NodeIterator siblingsIterator = parentNode.getNodes();
-                            for (int i = 0; i < index && siblingsIterator.hasNext(); i++) {
-                                siblingsIterator.nextNode();
-                            }
-
-                            if (siblingsIterator.hasNext()) {
-                                Node siblingNode = siblingsIterator.nextNode();
-                                String siblingName = siblingNode.getName();
-                                String newName = newResource.getName();
-                                if (!newName.equals(siblingName)) {
-                                    try {
-                                        parentNode.orderBefore(newName, siblingName);
-                                        changesMade = true;
-                                    } catch (UnsupportedRepositoryOperationException ex) {
-                                        // ordering not supported... ignore it
-                                    }
-                                }
+                        String newName = newResource.getName();
+                        if (!newName.equals(beforeName)) {
+                            try {
+                                newParentNode.orderBefore(newName, beforeName);
+                                changesMade = true;
+                            } catch (UnsupportedRepositoryOperationException ex) {
+                                // ordering not supported... ignore it
                             }
                         }
 
@@ -869,14 +1049,20 @@ public class NodeServlet extends NodeTreeServlet {
 
                             session.save();
                             response.setStatus(HttpServletResponse.SC_OK);
-                            writeJsonNode(jsonWriter, MappingRules.DEFAULT_NODE_FILTER,
+                            writeJsonNode(jsonWriter, MappingRules.DEFAULT_TREE_NODE_STRATEGY,
                                     newResource, LabelType.name, false);
 
                         } else {
 
                             response.setStatus(HttpServletResponse.SC_ACCEPTED);
                             jsonWriter.beginObject();
-                            jsonWriter.name("message").value("no modification");
+                            jsonWriter.name("success").value(true);
+                            jsonWriter.name("messages").beginArray();
+                            jsonWriter.beginObject();
+                            jsonWriter.name("level").value("info");
+                            jsonWriter.name("text").value(I18N.get(request, "no modification"));
+                            jsonWriter.endObject();
+                            jsonWriter.endArray();
                             jsonWriter.endObject();
                         }
 
@@ -924,45 +1110,49 @@ public class NodeServlet extends NodeTreeServlet {
                          ResourceHandle resource)
                 throws RepositoryException, IOException {
 
-            Node node = resource.adaptTo(Node.class);
+            ResourceResolver resolver = resource.getResourceResolver();
 
-            if (node != null) {
+            NodeParameters params = getNodeParameters(request);
+            String name = params.name;
 
-                NodeParameters params = getNodeParameters(request);
-                String name = params.name;
+            try {
+                if (StringUtils.isBlank(params.type)) {
+                    throw new ParameterValidationException("invalid node type '" + params.type + "'");
+                }
+                if (StringUtils.isBlank(name)) {
+                    throw new ParameterValidationException("invalid node name '" + name + "'");
+                }
 
-                try {
+                ResourceHandle newResource;
 
-                    if (StringUtils.isBlank(params.type)) {
-                        throw new ParameterValidationException("invalid node type '" + params.type + "'");
-                    }
-                    if (StringUtils.isBlank(name)) {
-                        throw new ParameterValidationException("invalid node name '" + name + "'");
-                    }
+                Node node = resource.adaptTo(Node.class);
+                if (node != null) {
 
                     Node newNode = NodeFactory.SINGLETON.createNode(request, node, name, params);
                     if (newNode != null) {
-                        ResourceResolver resolver = resource.getResourceResolver();
                         Session session = node.getSession();
                         session.save();
 
-                        ResourceHandle newResource = ResourceHandle.use(resolver.getResource(newNode.getPath()));
-                        JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
-                        writeJsonNode(jsonWriter, MappingRules.DEFAULT_NODE_FILTER,
-                                newResource, LabelType.name, false);
+                        newResource = ResourceHandle.use(resolver.getResource(newNode.getPath()));
 
                     } else {
                         response.sendError(HttpServletResponse.SC_BAD_REQUEST,
                                 "creation failed for node '" + resource.getPath() + "/" + name + "'");
+                        return;
                     }
 
-                } catch (ParameterValidationException pvex) {
-                    response.sendError(HttpServletResponse.SC_BAD_REQUEST, pvex.getMessage());
+                } else {
+
+                    newResource = ResourceHandle.use(resolver.create(resource, name, params.asMap()));
+                    resolver.commit();
                 }
 
-            } else {
-                response.sendError(HttpServletResponse.SC_BAD_REQUEST,
-                        "can't determine parent node '" + resource.getPath() + "'");
+                JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
+                writeJsonNode(jsonWriter, MappingRules.DEFAULT_TREE_NODE_STRATEGY,
+                        newResource, LabelType.name, false);
+
+            } catch (ParameterValidationException pvex) {
+                response.sendError(HttpServletResponse.SC_BAD_REQUEST, pvex.getMessage());
             }
         }
 
@@ -1007,19 +1197,22 @@ public class NodeServlet extends NodeTreeServlet {
 
                 if (StringUtils.isNotBlank(path) && (templateNode = session.getNode(path)) != null) {
 
-                    String nodePath = node.getPath() + "/"
-                            + (StringUtils.isNotBlank(params.name) ? params.name : templateNode.getName());
-                    String newNodePath = nodePath;
+                    try {
+                        String newNodePath = node.getPath() + "/"
+                                + (StringUtils.isNotBlank(params.name) ? params.name : templateNode.getName());
 
-                    Workspace workspace = session.getWorkspace();
-                    workspace.copy(path, newNodePath);
-                    session.save();
+                        Workspace workspace = session.getWorkspace();
+                        workspace.copy(path, newNodePath);
+                        session.save();
 
-                    ResourceHandle newResource = ResourceHandle.use(resolver.getResource(newNodePath));
-                    JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
-                    writeJsonNode(jsonWriter, MappingRules.DEFAULT_NODE_FILTER,
-                            newResource, LabelType.name, false);
+                        ResourceHandle newResource = ResourceHandle.use(resolver.getResource(newNodePath));
+                        JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
+                        writeJsonNode(jsonWriter, MappingRules.DEFAULT_TREE_NODE_STRATEGY,
+                                newResource, LabelType.name, false);
 
+                    } catch (ItemExistsException itex) {
+                        jsonAnswerItemExists(request, response);
+                    }
                 } else {
                     response.sendError(HttpServletResponse.SC_BAD_REQUEST,
                             "can't determine template node '" + path + "'");
@@ -1081,6 +1274,38 @@ public class NodeServlet extends NodeTreeServlet {
     // raw mapping
     //
 
+    public static final Pattern MAP_DEPTH_SELECTOR = Pattern.compile("^d([\\d]+)$");
+    public static final Pattern MAP_INDENT_SELECTOR = Pattern.compile("^i([\\d]+)$");
+
+    public static MappingRules getJsonSelectorRules(SlingHttpServletRequest request) {
+        boolean asSource = RequestUtil.checkSelector(request, "source");
+        boolean embedTypes = !(asSource || RequestUtil.checkSelector(request, "notype"));
+        ResourceFilter nodeFilter = null;
+        if (asSource || RequestUtil.checkSelector(request, "nofile")) {
+            nodeFilter = new ResourceFilter.FilterSet(ResourceFilter.FilterSet.Rule.and,
+                    new ResourceFilter.PrimaryTypeFilter(new StringFilter.BlackList("^nt:(file|resource)$")),
+                    MappingRules.MAPPING_NODE_FILTER);
+        }
+        return new MappingRules(MappingRules.getDefaultMappingRules(),
+                nodeFilter,
+                asSource ? MappingRules.SOURCE_EXPORT_FILTER : null, null,
+                new MappingRules.PropertyFormat(
+                        RequestUtil.getParameter(request, "format",
+                                RequestUtil.getSelector(request, MappingRules.PropertyFormat.Scope.value)),
+                        RequestUtil.getParameter(request, "binary",
+                                RequestUtil.getSelector(request, MappingRules.PropertyFormat.Binary.base64)),
+                        embedTypes),
+                RequestUtil.getParameter(request, "depth",
+                        RequestUtil.getIntSelector(request, MAP_DEPTH_SELECTOR,
+                                RequestUtil.getIntSelector(request, 0))),
+                null);
+    }
+
+    public static int getJsonSelectorIndent(SlingHttpServletRequest request) {
+        return RequestUtil.getParameter(request, "indent",
+                RequestUtil.getIntSelector(request, MAP_INDENT_SELECTOR, 0));
+    }
+
     protected class MapGetOperation implements ServletOperation {
 
         @Override
@@ -1094,21 +1319,8 @@ public class NodeServlet extends NodeTreeServlet {
             }
 
             try {
-                MappingRules rules = new MappingRules(MappingRules.getDefaultMappingRules(),
-                        null, null, null, new MappingRules.PropertyFormat(
-                        RequestUtil.getParameter(request, "format",
-                                RequestUtil.getSelector(request, MappingRules.PropertyFormat.Scope.value)),
-                        RequestUtil.getParameter(request, "binary",
-                                RequestUtil.getSelector(request, MappingRules.PropertyFormat.Binary.base64))),
-                        RequestUtil.getParameter(request, "depth",
-                                RequestUtil.getIntSelector(request, 0)),
-                        null);
-
-                int indent = RequestUtil.getParameter(request, "indent", 0);
-                JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
-                if (indent > 0) {
-                    jsonWriter.setIndent(StringUtils.repeat(' ', indent));
-                }
+                MappingRules rules = getJsonSelectorRules(request);
+                int indent = getJsonSelectorIndent(request);
 
                 if (RequestUtil.checkSelector(request, "download")) {
                     response.setContentType(FILE_CONTENT_TYPE);
@@ -1126,6 +1338,10 @@ public class NodeServlet extends NodeTreeServlet {
 
                 response.setStatus(HttpServletResponse.SC_OK);
 
+                JsonWriter jsonWriter = ResponseUtil.getJsonWriter(response);
+                if (indent > 0) {
+                    jsonWriter.setIndent(StringUtils.repeat(' ', indent));
+                }
                 JsonUtil.exportJson(jsonWriter, resource, rules);
 
             } catch (RepositoryException ex) {
@@ -1140,7 +1356,7 @@ public class NodeServlet extends NodeTreeServlet {
     protected class MapPostOperation extends MapPutOperation {
 
         @Override
-        protected String getPath(SlingHttpServletRequest request) throws IOException {
+        protected String getPath(SlingHttpServletRequest request) {
             String path = AbstractServiceServlet.getPath(request);
             String name = RequestUtil.getParameter(request, "name", "");
             if (StringUtils.isNotBlank(name)) {
@@ -1159,7 +1375,7 @@ public class NodeServlet extends NodeTreeServlet {
             if (file != null) {
                 InputStream input = file.getInputStream();
                 reader = new BufferedReader(
-                        new InputStreamReader(input, MappingRules.CHARSET.name()));
+                        new InputStreamReader(input, CHARSET.name()));
             }
             return reader;
         }
@@ -1172,7 +1388,7 @@ public class NodeServlet extends NodeTreeServlet {
                          ResourceHandle resource)
                 throws ServletException, IOException {
 
-            request.setCharacterEncoding(MappingRules.CHARSET.name());
+            request.setCharacterEncoding(CHARSET.name());
             Reader reader = getReader(request);
 
             if (reader != null) {
@@ -1199,7 +1415,7 @@ public class NodeServlet extends NodeTreeServlet {
             }
         }
 
-        protected String getPath(SlingHttpServletRequest request) throws IOException {
+        protected String getPath(SlingHttpServletRequest request) {
             return AbstractServiceServlet.getPath(request);
         }
 

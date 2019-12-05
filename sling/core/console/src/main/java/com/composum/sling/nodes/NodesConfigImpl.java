@@ -2,10 +2,11 @@ package com.composum.sling.nodes;
 
 import com.composum.sling.core.filter.ResourceFilter;
 import com.composum.sling.core.mapping.jcr.ResourceFilterMapping;
-import com.composum.sling.core.servlet.AbstractServiceServlet;
 import com.composum.sling.nodes.servlet.NodeServlet;
 import com.composum.sling.nodes.servlet.PropertyServlet;
 import com.composum.sling.nodes.servlet.SecurityServlet;
+import com.composum.sling.nodes.servlet.SourceServlet;
+import com.composum.sling.nodes.servlet.SourceUpdateServlet;
 import com.composum.sling.nodes.servlet.VersionServlet;
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
@@ -16,6 +17,7 @@ import org.apache.felix.scr.annotations.Service;
 import org.apache.sling.commons.osgi.PropertiesUtil;
 import org.osgi.service.component.ComponentContext;
 
+import javax.servlet.Servlet;
 import java.util.Dictionary;
 import java.util.HashMap;
 import java.util.Map;
@@ -31,6 +33,14 @@ import java.util.Map;
 )
 @Service
 public class NodesConfigImpl implements NodesConfiguration {
+
+    @Property(
+            name = CONSOLE_ACCESS_CHECK,
+            label = "Check Console Access",
+            description = "if 'true' (checked) the access to the console pages is checked on servlet access",
+            boolValue =  true
+    )
+    private boolean checkConsoleAccess;
 
     @Property(
             name = CONSOLE_CATEGORIES_KEY,
@@ -50,17 +60,6 @@ public class NodesConfigImpl implements NodesConfiguration {
             longValue = QUERY_RESULT_LIMIT_DEFAULT
     )
     private long queryResultLimit;
-
-    @Property(
-            name = QUERY_TEMPLATES_KEY,
-            label = "Query Templates",
-            description = "a list of templates for the initial query history list",
-            value = {
-                    "/content/test ${text}",
-                    "${path}//${name}[jcr:contains(.,'${word}')]"
-            }
-    )
-    private String[] queryTemplates;
 
     @Property(
             name = ERRORPAGES_PATH,
@@ -111,6 +110,14 @@ public class NodesConfigImpl implements NodesConfiguration {
     private ResourceFilter orderableNodesFilter;
 
     @Property(
+            name = SOURCE_NODES_FILTER_KEY,
+            label = "XML Source Nodes Filter",
+            description = "the filter configuration for the source export of the repository content (Source Servlet)",
+            value = "PrimaryType(-'^cpp:(Statistics)$,^rep:(.+)$')"
+    )
+    private ResourceFilter sourceNodesFilter;
+
+    @Property(
             name = PACKAGE_SERVLET_ENABLED,
             label = "Package Servlet",
             description = "the general on/off switch for the services of the Package Servlet",
@@ -127,7 +134,7 @@ public class NodesConfigImpl implements NodesConfiguration {
     private boolean securityServletEnabled;
 
     @Property(
-            name = "node.servlet.enabled",
+            name = NODE_SERVLET_ENABLED,
             label = "Node Servlet",
             description = "the general on/off switch for the services of the Node Servlet",
             boolValue = true
@@ -135,7 +142,7 @@ public class NodesConfigImpl implements NodesConfiguration {
     private boolean nodeServletEnabled;
 
     @Property(
-            name = "property.servlet.enabled",
+            name = PROPERTY_SERVLET_ENABLED,
             label = "Property Servlet",
             description = "the general on/off switch for the services of the Property Servlet",
             boolValue = true
@@ -143,16 +150,31 @@ public class NodesConfigImpl implements NodesConfiguration {
     private boolean propertyServletEnabled;
 
     @Property(
-            name = "version.servlet.enabled",
+            name = VERSION_SERVLET_ENABLED,
             label = "Version Servlet",
             description = "the general on/off switch for the services of the Version Servlet",
             boolValue = true
     )
     private boolean versionServletEnabled;
 
-    public static final String USER_MANAGEMENT_SERVLET_ENABLED = "usermanagement.servlet.enabled";
     @Property(
-            name = "usermanagement.servlet.enabled",
+            name = SOURCE_SERVLET_ENABLED,
+            label = "Source Servlet",
+            description = "the general on/off switch for the services of the Source Servlet",
+            boolValue = true
+    )
+    private boolean sourceServletEnabled;
+
+    @Property(
+            name = SOURCE_UPDATE_SERVLET_ENABLED,
+            label = "Source Update Servlet",
+            description = "the general on/off switch for the services of the Source Update Servlet",
+            boolValue = true
+    )
+    private boolean sourceUpdateServletEnabled;
+
+    @Property(
+            name = USER_MANAGEMENT_SERVLET_ENABLED,
             label = "User Management Servlet",
             description = "the general on/off switch for the services of the User Management Servlet",
             boolValue = true
@@ -162,9 +184,14 @@ public class NodesConfigImpl implements NodesConfiguration {
     private Map<String, Boolean> enabledServlets;
 
     @Override
-    public boolean isEnabled(AbstractServiceServlet servlet) {
+    public boolean isEnabled(Servlet servlet) {
         Boolean result = enabledServlets.get(servlet.getClass().getSimpleName());
         return result != null ? result : false;
+    }
+
+    @Override
+    public boolean checkConsoleAccess() {
+        return checkConsoleAccess;
     }
 
     @Override
@@ -175,11 +202,6 @@ public class NodesConfigImpl implements NodesConfiguration {
     @Override
     public long getQueryResultLimit() {
         return queryResultLimit;
-    }
-
-    @Override
-    public String[] getQueryTemplates() {
-        return queryTemplates;
     }
 
     @Override
@@ -207,6 +229,12 @@ public class NodesConfigImpl implements NodesConfiguration {
         return orderableNodesFilter;
     }
 
+    @Override
+    public ResourceFilter getSourceNodesFilter() {
+        return sourceNodesFilter;
+    }
+
+    @Override
     public Dictionary getProperties() {
         return properties;
     }
@@ -217,9 +245,9 @@ public class NodesConfigImpl implements NodesConfiguration {
     @Modified
     protected void activate(ComponentContext context) {
         this.properties = context.getProperties();
+        checkConsoleAccess = (Boolean) properties.get(CONSOLE_ACCESS_CHECK);
         consoleCategories = PropertiesUtil.toStringArray(properties.get(CONSOLE_CATEGORIES_KEY));
         queryResultLimit = PropertiesUtil.toLong(properties.get(QUERY_RESULT_LIMIT_KEY), QUERY_RESULT_LIMIT_DEFAULT);
-        queryTemplates = PropertiesUtil.toStringArray(properties.get(QUERY_TEMPLATES_KEY));
         errorpagesPath = (String) properties.get(ERRORPAGES_PATH);
         if (errorpagesPath.endsWith("/") && errorpagesPath.length() > 1) {
             errorpagesPath = errorpagesPath.substring(errorpagesPath.length() - 1);
@@ -234,6 +262,8 @@ public class NodesConfigImpl implements NodesConfiguration {
                 (String) properties.get(REFERENCEABLE_NODES_FILTER_KEY));
         orderableNodesFilter = ResourceFilterMapping.fromString(
                 (String) properties.get(ORDERABLE_NODES_FILTER_KEY));
+        sourceNodesFilter = ResourceFilterMapping.fromString(
+                (String) properties.get(SOURCE_NODES_FILTER_KEY));
         enabledServlets = new HashMap<>();
         enabledServlets.put("PackageServlet", packageServletEnabled =
                 (Boolean) properties.get(PACKAGE_SERVLET_ENABLED));
@@ -245,6 +275,10 @@ public class NodesConfigImpl implements NodesConfiguration {
                 (Boolean) properties.get(PROPERTY_SERVLET_ENABLED));
         enabledServlets.put(VersionServlet.class.getSimpleName(), versionServletEnabled =
                 (Boolean) properties.get(VERSION_SERVLET_ENABLED));
+        enabledServlets.put(SourceServlet.class.getSimpleName(), sourceServletEnabled =
+                (Boolean) properties.get(SOURCE_SERVLET_ENABLED));
+        enabledServlets.put(SourceUpdateServlet.class.getSimpleName(), sourceUpdateServletEnabled =
+                (Boolean) properties.get(SOURCE_UPDATE_SERVLET_ENABLED));
         enabledServlets.put("UserManagementServlet", userManagementServletEnabled =
                 (Boolean) properties.get(USER_MANAGEMENT_SERVLET_ENABLED));
     }

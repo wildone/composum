@@ -14,6 +14,7 @@ import org.apache.jackrabbit.vault.fs.config.MetaInf;
 import org.apache.jackrabbit.vault.packaging.JcrPackage;
 import org.apache.jackrabbit.vault.packaging.JcrPackageDefinition;
 import org.apache.jackrabbit.vault.packaging.JcrPackageManager;
+import org.apache.jackrabbit.vault.packaging.Packaging;
 import org.apache.jackrabbit.vault.packaging.PackagingService;
 import org.apache.jackrabbit.vault.util.JcrConstants;
 import org.apache.sling.api.SlingHttpServletRequest;
@@ -24,6 +25,7 @@ import org.apache.sling.api.resource.ResourceResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.el.PropertyNotFoundException;
 import javax.jcr.Node;
 import javax.jcr.PathNotFoundException;
@@ -69,6 +71,7 @@ public class PackageUtil {
     public static final String DEF_REQUIRES_RESTART = JcrPackageDefinition.PN_REQUIRES_RESTART;
     public static final String DEF_REQUIRES_ROOT = JcrPackageDefinition.PN_REQUIRES_ROOT;
     public static final String DEF_TESTED_WITH = "testedWith";
+    public static final String DEF_INCLUDE_VERSIONS = "includeVersions";
 
     public static final Pattern IMPORT_DONE = Pattern.compile("^Package imported\\.$");
 
@@ -76,11 +79,18 @@ public class PackageUtil {
         group, jcrpckg
     }
 
-    public static JcrPackageManager createPackageManager(SlingHttpServletRequest request) {
+    /**
+     * Retrieves a package manager for the JCR session.
+     */
+    @Nonnull
+    public static JcrPackageManager getPackageManager(@Nonnull Packaging packaging, @Nonnull SlingHttpServletRequest request) throws RepositoryException {
         ResourceResolver resolver = request.getResourceResolver();
         Session session = resolver.adaptTo(Session.class);
-        JcrPackageManager manager = PackagingService.getPackageManager(session);
-        return manager;
+        if (session != null) {
+            return packaging.getPackageManager(session);
+        } else {
+            throw new RepositoryException("can't adapt resolver to session"); // should be impossible
+        }
     }
 
     public static String getPath(SlingHttpServletRequest request) {
@@ -101,9 +111,8 @@ public class PackageUtil {
         return path;
     }
 
-    public static Resource getResource(SlingHttpServletRequest request, String path) throws RepositoryException {
+    public static Resource getResource(JcrPackageManager manager, SlingHttpServletRequest request, String path) throws RepositoryException {
         Resource resource = null;
-        JcrPackageManager manager = PackageUtil.createPackageManager(request);
         Node node;
         node = manager.getPackageRoot(true);
         if (node != null) {
@@ -152,11 +161,10 @@ public class PackageUtil {
         return path;
     }
 
-    public static TreeType getTreeType(SlingHttpServletRequest request, String path) {
+    public static TreeType getTreeType(JcrPackageManager manager, SlingHttpServletRequest request, String path) {
         TreeType type = group;
         try {
-            Resource resource = getResource(request, path);
-            JcrPackageManager manager = createPackageManager(request);
+            Resource resource = getResource(manager, request, path);
             JcrPackage jcrPackage = getJcrPackage(manager, resource);
             if (jcrPackage != null) {
                 type = TreeType.jcrpckg;
@@ -421,10 +429,9 @@ public class PackageUtil {
     // Tree Mapping of the flat Package list
     //
 
-    public static TreeNode getTreeNode(SlingHttpServletRequest request) throws RepositoryException {
+    public static TreeNode getTreeNode(JcrPackageManager manager, SlingHttpServletRequest request) throws RepositoryException {
 
         String path = PackageUtil.getPath(request);
-        JcrPackageManager manager = PackageUtil.createPackageManager(request);
         List<JcrPackage> jcrPackages = manager.listPackages();
 
         PackageUtil.TreeNode treeNode = new PackageUtil.TreeNode(path);
@@ -672,6 +679,8 @@ public class PackageUtil {
         String version = definition.get(JcrPackageDefinition.PN_VERSION);
         String description = definition.get(JcrPackageDefinition.PN_DESCRIPTION);
         Calendar lastModified = definition.getCalendar(JcrPackageDefinition.PN_LASTMODIFIED);
+        Calendar lastUnpacked = definition.getCalendar(JcrPackageDefinition.PN_LAST_UNPACKED);
+        boolean includeVersions = definition.getBoolean("includeVersions");
         writer.beginObject();
         writer.name(JcrPackageDefinition.PN_GROUP).value(definition.get(JcrPackageDefinition.PN_GROUP));
         writer.name(JcrPackageDefinition.PN_NAME).value(definition.get(JcrPackageDefinition.PN_NAME));
@@ -684,6 +693,10 @@ public class PackageUtil {
         if (lastModified != null) {
             writer.name(JcrPackageDefinition.PN_LASTMODIFIED).value(dateFormat.format(lastModified.getTime()));
         }
+        if (lastUnpacked != null) {
+            writer.name(JcrPackageDefinition.PN_LAST_UNPACKED).value(dateFormat.format(lastUnpacked.getTime()));
+        }
+        writer.name("includeVersions").value(includeVersions);
         writer.endObject();
     }
 
@@ -820,5 +833,6 @@ public class PackageUtil {
         DEFINITION_SETTERS.put(DEF_REQUIRES_RESTART, DefinitionSetter.BOOLEAN);
         DEFINITION_SETTERS.put(DEF_REQUIRES_ROOT, DefinitionSetter.BOOLEAN);
         DEFINITION_SETTERS.put(DEF_TESTED_WITH, DefinitionSetter.STRING);
+        DEFINITION_SETTERS.put(DEF_INCLUDE_VERSIONS, DefinitionSetter.BOOLEAN);
     }
 }

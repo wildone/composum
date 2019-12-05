@@ -1,24 +1,37 @@
+/*
+ * copyright (c) 2015ff IST GmbH Dresden, Germany - https://www.ist-software.com
+ *
+ * This software may be modified and distributed under the terms of the MIT license.
+ */
 package com.composum.sling.cpnl;
 
+import com.composum.sling.core.util.I18N;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.sling.api.SlingHttpServletRequest;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceUtil;
 import org.apache.sling.scripting.jsp.util.TagUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.jsp.JspException;
-import javax.servlet.jsp.JspTagException;
 import javax.servlet.jsp.JspWriter;
 import java.io.IOException;
 import java.text.Format;
+import java.text.MessageFormat;
+import java.util.Calendar;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
-public class TextTag extends CpnlBodyTagSupport {
+public class TextTag extends TagBase {
 
-    public enum Type {text, rich, script, value}
+    private static final Logger LOG = LoggerFactory.getLogger(TextTag.class);
+
+    public enum Type {text, rich, script, style, cdata, path, value}
 
     public interface EscapeFunction {
-        Object escape(Object value);
+        Object escape(SlingHttpServletRequest request, Object value);
     }
 
     public static final Map<Type, EscapeFunction> ESCAPE_FUNCTION_MAP;
@@ -27,25 +40,43 @@ public class TextTag extends CpnlBodyTagSupport {
         ESCAPE_FUNCTION_MAP = new HashMap<>();
         ESCAPE_FUNCTION_MAP.put(Type.text, new EscapeFunction() {
             @Override
-            public Object escape(Object value) {
+            public Object escape(SlingHttpServletRequest request, Object value) {
                 return CpnlElFunctions.text(TextTag.toString(value));
             }
         });
         ESCAPE_FUNCTION_MAP.put(Type.rich, new EscapeFunction() {
             @Override
-            public Object escape(Object value) {
-                return CpnlElFunctions.rich(TextTag.toString(value));
+            public Object escape(SlingHttpServletRequest request, Object value) {
+                return CpnlElFunctions.rich(request, TextTag.toString(value));
             }
         });
         ESCAPE_FUNCTION_MAP.put(Type.script, new EscapeFunction() {
             @Override
-            public Object escape(Object value) {
+            public Object escape(SlingHttpServletRequest request, Object value) {
                 return CpnlElFunctions.script(TextTag.toString(value));
+            }
+        });
+        ESCAPE_FUNCTION_MAP.put(Type.style, new EscapeFunction() {
+            @Override
+            public Object escape(SlingHttpServletRequest request, Object value) {
+                return CpnlElFunctions.style(TextTag.toString(value));
+            }
+        });
+        ESCAPE_FUNCTION_MAP.put(Type.cdata, new EscapeFunction() {
+            @Override
+            public Object escape(SlingHttpServletRequest request, Object value) {
+                return CpnlElFunctions.cdata(TextTag.toString(value));
+            }
+        });
+        ESCAPE_FUNCTION_MAP.put(Type.path, new EscapeFunction() {
+            @Override
+            public Object escape(SlingHttpServletRequest request, Object value) {
+                return CpnlElFunctions.path(TextTag.toString(value));
             }
         });
         ESCAPE_FUNCTION_MAP.put(Type.value, new EscapeFunction() {
             @Override
-            public Object escape(Object value) {
+            public Object escape(SlingHttpServletRequest request, Object value) {
                 return CpnlElFunctions.value(value);
             }
         });
@@ -55,82 +86,106 @@ public class TextTag extends CpnlBodyTagSupport {
     private Object value;
     private String propertyName;
     private boolean escape = true;
-    private Format format;
+    private boolean i18n = false;
+    private Format formatter;
+    private String format;
+    private Locale locale;
     private String output;
-    private String tagClass;
-    private String tagName;
 
     public TextTag() {
         super();
     }
 
-    private void init() {
+    @Override
+    protected void clear() {
         this.type = Type.text;
         this.value = null;
         this.propertyName = null;
+        this.locale = null;
         this.format = null;
+        this.formatter = null;
+        this.i18n = false;
+        this.escape = true;
         this.output = null;
-        this.tagName = null;
-        this.tagClass = null;
+        super.clear();
     }
 
-    public void release() {
-        super.release();
-        init();
+    @Override
+    protected String getDefaultTagName() {
+        return "div";
     }
 
+    @Override
     public int doStartTag() throws JspException {
-        this.bodyContent = null;
-        this.output = null;
-        if (this.value != null) {
-            this.output = String.valueOf(this.value);
+        int result = super.doStartTag();
+        if (renderTag()) {
+            this.bodyContent = null;
+            this.output = null;
+            if (this.value == null) {
+                if (this.propertyName != null) {
+                    Resource resource = TagUtil.getRequest(this.pageContext).getResource();
+                    this.value = ResourceUtil.getValueMap(resource).get(this.propertyName, Object.class);
+                }
+            }
+            Format formatter = null;
+            if (this.value != null) {
+                formatter = getFormatter(this.value);
+                if (formatter != null) {
+                    String stringValue = this.value instanceof String ? (String) this.value : null;
+                    if (StringUtils.isNotBlank(stringValue) && this.i18n) {
+                        stringValue = I18N.get(this.request, stringValue);
+                    }
+                    this.output = formatter.format(
+                            formatter instanceof MessageFormat
+                                    ? new String[]{stringValue != null ? stringValue : toString(this.value)}
+                                    : this.value instanceof Calendar ? ((Calendar) this.value).getTime()
+                                    : stringValue != null ? stringValue : this.value);
+                } else {
+                    this.output = toString(this.value);
+                }
+            }
+            if (StringUtils.isNotBlank(this.output) && this.i18n && formatter == null) {
+                this.output = I18N.get(this.request, this.output);
+            }
+            return this.output != null ? SKIP_BODY : EVAL_BODY_BUFFERED;
         }
-        if ((this.output == null) && (this.propertyName != null)) {
-            Resource resource = TagUtil.getRequest(this.pageContext).getResource();
-            this.output = ((String) ResourceUtil.getValueMap(resource).get(this.propertyName, String.class));
-        }
-        return this.output != null ? SKIP_BODY : EVAL_BODY_BUFFERED;
+        return result;
     }
 
-    public int doAfterBody() throws JspException {
+    @Override
+    public int doAfterBody() {
         this.output = this.bodyContent.getString().trim();
         return SKIP_BODY;
     }
 
-    public int doEndTag() throws JspException {
+    @Override
+    protected void renderTagStart() {
+    }
+
+    /**
+     * is rendering the text and a tag around if 'tagName' is set or CSS classes are specified
+     */
+    @Override
+    protected void renderTagEnd() {
         try {
-            if ((this.output != null) && (this.format != null)) {
-                this.output = this.format.format(this.output);
-            }
-            if (StringUtils.isNotEmpty(output)) {
+            if (StringUtils.isNotEmpty(this.output)) {
                 this.output = toString(this.escape
                         ? escape(this.output)
                         : this.output);
                 JspWriter writer = this.pageContext.getOut();
-                if (StringUtils.isNotBlank(this.tagName) || StringUtils.isNotBlank(this.tagClass)) {
-                    if (this.tagName == null) {
-                        this.tagName = "div";
-                    }
-                    writer.write("<");
-                    writer.write(this.tagName);
-                    if (StringUtils.isNotBlank(this.tagClass)) {
-                        writer.write(" class=\"");
-                        writer.write(this.tagClass);
-                        writer.write("\"");
-                    }
-                    writer.write(">");
+                boolean renderTag = renderTag()
+                        && (StringUtils.isNotBlank(this.tagName) || StringUtils.isNotBlank(getClasses()));
+                if (renderTag) {
+                    super.renderTagStart();
                 }
                 writer.write(this.output);
-                if (StringUtils.isNotBlank(this.tagName)) {
-                    writer.write("</");
-                    writer.write(this.tagName);
-                    writer.write(">");
+                if (renderTag) {
+                    super.renderTagEnd();
                 }
             }
-        } catch (IOException e) {
-            throw new JspTagException(e);
+        } catch (IOException ioex) {
+            LOG.error(ioex.getMessage(), ioex);
         }
-        return EVAL_PAGE;
     }
 
     public static String toString(Object value) {
@@ -146,7 +201,7 @@ public class TextTag extends CpnlBodyTagSupport {
      */
     protected Object escape(Object value) {
         EscapeFunction function = ESCAPE_FUNCTION_MAP.get(this.type);
-        return function != null ? function.escape(value) : CpnlElFunctions.text(toString(value));
+        return function != null ? function.escape(TagUtil.getRequest(this.pageContext), value) : CpnlElFunctions.text(toString(value));
     }
 
     /**
@@ -178,23 +233,43 @@ public class TextTag extends CpnlBodyTagSupport {
     }
 
     /**
-     * @param format the fmt to set
+     * @param i18n flag for translating the text (default: 'false')
      */
-    public void setFormat(Format format) {
-        this.format = format;
+    public void setI18n(boolean i18n) {
+        this.i18n = i18n;
     }
 
     /**
-     * @param tagName the tagName to set
+     * @param format the fmt to set
      */
-    public void setTagName(String tagName) {
-        this.tagName = tagName;
+    public void setFormat(String format) {
+        this.format = format;
+    }
+
+    public Format getFormatter(Object value) {
+        if (formatter == null && format != null) {
+            formatter = CpnlElFunctions.getFormatter(getLocale(),
+                    this.i18n ? I18N.get(this.request, format) : format,
+                    value != null ? value.getClass() : null);
+        }
+        return formatter;
+    }
+
+    public void setLocale(Locale locale) {
+        this.locale = locale;
+    }
+
+    public Locale getLocale() {
+        if (locale == null) {
+            locale = request.getLocale();
+        }
+        return locale;
     }
 
     /**
      * @param tagClass the tagClass to set
      */
     public void setTagClass(String tagClass) {
-        this.tagClass = tagClass;
+        setClasses(tagClass);
     }
 }

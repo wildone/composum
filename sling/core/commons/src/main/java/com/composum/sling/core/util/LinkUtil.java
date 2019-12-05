@@ -1,3 +1,8 @@
+/*
+ * copyright (c) 2015ff IST GmbH Dresden, Germany - https://www.ist-software.com
+ *
+ * This software may be modified and distributed under the terms of the MIT license.
+ */
 package com.composum.sling.core.util;
 
 import com.composum.sling.core.ResourceHandle;
@@ -9,6 +14,7 @@ import org.apache.tika.mime.MimeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -26,7 +32,15 @@ public class LinkUtil {
     public static final String PROP_TARGET = "sling:target";
     public static final String PROP_REDIRECT = "sling:redirect";
 
-    public static final Pattern URL_PATTERN = Pattern.compile("^(https?)://([^/]+)(:\\d+)?(/.*)?$");
+    public static final String FORWARDED_PROTO = "X-Forwarded-Proto";
+    public static final String FORWARDED_PROTO_HTTPS = "https";
+    public static final String FORWARDED_SSL_HEADER = "X-Forwarded-SSL";
+    public static final String FORWARDED_SSL_ON = "on";
+
+    public static final String URL_PATTERN_STRING = "^(?:(https?):)?//([^/]+)(:\\d+)?(/.*)?$";
+    public static final Pattern URL_PATTERN = Pattern.compile(URL_PATTERN_STRING, Pattern.CASE_INSENSITIVE);
+    public static final String SPECIAL_URL_STRING = "^(?:(mailto|tel):)(.+)$";
+    public static final Pattern SPECIAL_URL_PATTERN = Pattern.compile(SPECIAL_URL_STRING, Pattern.CASE_INSENSITIVE);
 
     public static final Pattern SELECTOR_PATTERN = Pattern.compile("^(.*/[^/]+)(\\.[^.]+)$");
 
@@ -108,11 +122,13 @@ public class LinkUtil {
             return url;
         }
 
+        String result = url;
+
         // rebuild URL if not always external only
-        if (!isExternalUrl(url)) {
+        if (!isExternalUrl(result)) {
 
             ResourceResolver resolver = request.getResourceResolver();
-            ResourceHandle resource = ResourceHandle.use(resolver.getResource(url));
+            ResourceHandle resource = ResourceHandle.use(resolver.getResource(result));
 
             // it's possible that the resource can not be resolved / is virtual but is valid...
             if (resource.isValid()) {
@@ -134,11 +150,12 @@ public class LinkUtil {
 
             // map the path (the url) with the resource resolver (encodes the url)
             if (mapper != null) {
-                url = mapper.mapUri(request, url);
+                result = mapper.mapUri(request, result);
+                result = adjustMappedUrl(request, result);
             }
 
             if (StringUtils.isNotBlank(extension)) {
-                url += extension;   // extension starts with a '.'
+                result += extension;   // extension starts with a '.'
             }
 
             // inject selectors into the complete URL because
@@ -148,13 +165,16 @@ public class LinkUtil {
                     selectors = "." + selectors;
                 }
 
-                Matcher matcher = SELECTOR_PATTERN.matcher(url);
+                Matcher matcher = SELECTOR_PATTERN.matcher(result);
                 if (matcher.matches()) {
-                    url = matcher.group(1) + selectors + matcher.group(2);
+                    result = matcher.group(1) + selectors + matcher.group(2);
                 }
             }
+            result = LinkUtil.encodeUrl(result);
         }
-        return url;
+
+        LOG.debug("Mapped '{}' to '{}'", url, result);
+        return result;
     }
 
     /**
@@ -162,7 +182,6 @@ public class LinkUtil {
      *
      * @param request the request as the externalization context
      * @param url     the url value (the local URL)
-     * @return
      */
     public static String getAbsoluteUrl(SlingHttpServletRequest request, String url) {
         if (!isExternalUrl(url) && url.startsWith("/")) {
@@ -180,16 +199,47 @@ public class LinkUtil {
     public static String getAuthority(SlingHttpServletRequest request) {
         String host = request.getServerName();
         int port = request.getServerPort();
-        boolean isSecure = request.isSecure();
-        return port > 0 && ((!isSecure && port != 80) || (isSecure && port != 443))
-                ? (host + ":" + port) : host;
+        return port > 0 && (port != getDefaultPort(request)) ? (host + ":" + port) : host;
+    }
+
+    public static int getDefaultPort(SlingHttpServletRequest request) {
+        return request.isSecure() || isForwaredSSL(request) ? 443 : 80;
+    }
+
+    public static boolean isForwaredSSL(HttpServletRequest request) {
+        return FORWARDED_SSL_ON.equalsIgnoreCase(request.getHeader(FORWARDED_SSL_HEADER)) ||
+                FORWARDED_PROTO.equalsIgnoreCase(request.getHeader(FORWARDED_PROTO_HTTPS));
     }
 
     /**
-     * Returns 'true' if the url is an 'external' url (starts with 'https?://')
+     * in the case of a forwarded SSL request the resource resolver mapping rules must contain the
+     * false port (80) to ensure a proper resolving - but in the result this bad port is included in the
+     * mapped URL and must be removed - done here
+     */
+    protected static String adjustMappedUrl(SlingHttpServletRequest request, String url) {
+        // build a pattern with the (false) default port
+        Pattern defaultPortPattern = Pattern.compile(
+                URL_PATTERN_STRING.replaceFirst("\\(:\\\\d\\+\\)\\?", ":" + getDefaultPort(request)));
+        Matcher matcher = defaultPortPattern.matcher(url);
+        // remove the port if the URL matches (contains the port nnumber)
+        if (matcher.matches()) {
+            if (null == matcher.group(1)) url = "//" + matcher.group(2);
+            else url = matcher.group(1) + "://" + matcher.group(2);
+            String uri = matcher.group(3);
+            if (StringUtils.isNotBlank(uri)) {
+                url += uri;
+            } else {
+                url += "/";
+            }
+        }
+        return url;
+    }
+
+    /**
+     * Returns 'true' if the url is an 'external' url (starts with 'https?://' or is a special URL)
      */
     public static boolean isExternalUrl(String url) {
-        return URL_PATTERN.matcher(url).matches();
+        return URL_PATTERN.matcher(url).matches() || SPECIAL_URL_PATTERN.matcher(url).matches();
     }
 
     /**
@@ -207,26 +257,46 @@ public class LinkUtil {
      */
     public static String getFinalTarget(Resource resource) throws RedirectLoopException {
         ResourceHandle handle = ResourceHandle.use(resource);
-        String finalTarget = getFinalTarget(handle, new ArrayList<String>());
-        return finalTarget;
+        return getFinalTarget(handle, new ArrayList<>());
     }
 
+    /**
+     * Determines the 'final URL' of a link to a resource by traversing along the 'redirect' properties.
+     *
+     * @param resource the addressed resource
+     * @param trace    the list of paths traversed before (to detect loops in redirects)
+     * @return a 'final' path or URL; <code>null</code> if no different target found
+     * @throws RedirectLoopException if a redirect loop has been detected
+     */
     protected static String getFinalTarget(ResourceHandle resource, List<String> trace)
             throws RedirectLoopException {
         String finalTarget = null;
         if (resource.isValid()) {
             String path = resource.getPath();
             if (trace.contains(path)) {
+                // throw an exception if a loop has been detected
                 throw new RedirectLoopException(trace, path);
             }
+            // search for redirects and resolve them...
             String redirect = resource.getProperty(PROP_TARGET);
             if (StringUtils.isBlank(redirect)) {
                 redirect = resource.getProperty(PROP_REDIRECT);
             }
+            if (StringUtils.isBlank(redirect)) {
+                // try to use the properties of a 'jcr:content' child instead of the target resource itself
+                ResourceHandle contentResource = resource.getContentResource();
+                if (resource != contentResource) {
+                    redirect = contentResource.getProperty(PROP_TARGET);
+                    if (StringUtils.isBlank(redirect)) {
+                        redirect = contentResource.getProperty(PROP_REDIRECT);
+                    }
+                }
+            }
             if (StringUtils.isNotBlank(redirect)) {
                 trace.add(path);
-                finalTarget = redirect;
+                finalTarget = redirect; // use the redirect target as the link URL
                 if (!URL_PATTERN.matcher(finalTarget).matches()) {
+                    // look forward if the redirect found points to another resource
                     ResourceResolver resolver = resource.getResourceResolver();
                     Resource targetResource = resolver.getResource(finalTarget);
                     if (targetResource != null) {
@@ -298,13 +368,16 @@ public class LinkUtil {
         }
         if (extension == null) {
             String resourceType = resource.getResourceType();
-            if (resourceType != null && !resource.getPrimaryType().equals(resourceType)) {
+            String primaryType;
+            if (resourceType != null &&
+                    (primaryType = resource.getPrimaryType()) != null && !primaryType.equals(resourceType)) {
                 extension = EXT_HTML; // use '.html' by default if a real resource type is present
             } else {
                 ResourceHandle content = resource.getContentResource();
-                if (content.isValid()) {
+                if (content.isValid() && !ResourceUtil.isNonExistingResource(content)) {
                     resourceType = content.getResourceType();
-                    if (resourceType != null && !content.getPrimaryType().equals(resourceType)) {
+                    if (resourceType != null &&
+                            (primaryType = content.getPrimaryType()) != null && !primaryType.equals(resourceType)) {
                         extension = EXT_HTML; // use '.html' by default if a content resource exists with a real resource type
                     }
                 }
@@ -324,13 +397,32 @@ public class LinkUtil {
      * @param path the path to encode
      * @return the URL encoded path
      */
+    public static String encodeUrl(String path) {
+        if (path != null) {
+            path = path.replaceAll(">", "%3E");
+            path = path.replaceAll("<", "%3C");
+            path = path.replaceAll(" ", "%20");
+        }
+        return path;
+    }
+
+    /**
+     * URL encoding for a resource path (without the encoding for the '/' path delimiters).
+     *
+     * @param path the path to encode
+     * @return the URL encoded path
+     */
     public static String encodePath(String path) {
         if (path != null) {
+            path = encodeUrl(path);
             path = path.replaceAll("/jcr:", "/_jcr_");
-            path = path.replaceAll("&", "%26");
-            path = path.replaceAll(":", "%3A");
+            path = path.replaceAll("\\?", "%3F");
+            path = path.replaceAll("=", "%3D");
             path = path.replaceAll(";", "%3B");
-            path = path.replaceAll(" ", "%20");
+            path = path.replaceAll(":", "%3A");
+            path = path.replaceAll("\\+", "%2B");
+            path = path.replaceAll("&", "%26");
+            path = path.replaceAll("#", "%23");
         }
         return path;
     }

@@ -1,24 +1,25 @@
 package com.composum.sling.cpnl;
 
 import com.composum.sling.clientlibs.handle.Clientlib;
-import com.composum.sling.clientlibs.handle.ClientlibKey;
-import com.composum.sling.clientlibs.handle.ClientlibLink;
+import com.composum.sling.clientlibs.handle.ClientlibElement;
 import com.composum.sling.clientlibs.handle.ClientlibRef;
 import com.composum.sling.clientlibs.processor.RendererContext;
 import com.composum.sling.clientlibs.service.ClientlibService;
-import com.composum.sling.core.BeanContext;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.jcr.RepositoryException;
 import javax.servlet.jsp.JspException;
 import javax.servlet.jsp.JspWriter;
 import java.io.IOException;
-import java.util.LinkedHashMap;
-import java.util.Map;
+
+import static org.apache.commons.lang3.ObjectUtils.defaultIfNull;
 
 /**
- * a tag build references to styles and script files
+ * A tag build references to styles and script files. Renders either links to individual files, client libraries
+ * containing several embedded files or client library categories containing embedded files for a category of client
+ * libraries.
  */
 public class ClientlibTag extends CpnlBodyTagSupport {
 
@@ -28,7 +29,9 @@ public class ClientlibTag extends CpnlBodyTagSupport {
 
     protected Clientlib.Type type;
     protected String path;
-    protected Map<String, String> properties = new LinkedHashMap<>();
+    protected String category;
+    protected Object test;
+    private transient Boolean testResult;
 
     public void setType(String type) {
         this.type = Clientlib.Type.valueOf(type);
@@ -38,8 +41,25 @@ public class ClientlibTag extends CpnlBodyTagSupport {
         this.path = path;
     }
 
-    public void setRel(String rel) {
-        properties.put(ClientlibKey.PROP_REL, rel);
+    public void setCategory(String category) {
+        this.category = category;
+    }
+
+    /**
+     * the 'test' expression for conditional tags
+     */
+    public void setTest(Object value) {
+        test = value;
+    }
+
+    /**
+     * evaluates the test expression if present and returns the evaluation result; default: 'true'
+     */
+    protected boolean getTestResult() {
+        if (testResult == null) {
+            testResult = eval(test, test instanceof Boolean ? (Boolean) test : Boolean.TRUE);
+        }
+        return testResult;
     }
 
     @Override
@@ -47,7 +67,9 @@ public class ClientlibTag extends CpnlBodyTagSupport {
         super.clear();
         type = null;
         path = null;
-        properties.clear();
+        category = null;
+        test = null;
+        testResult = null;
     }
 
     protected Clientlib.Type getType() {
@@ -65,60 +87,41 @@ public class ClientlibTag extends CpnlBodyTagSupport {
 
     @Override
     public int doEndTag() throws JspException {
-        try {
-            RendererContext rendererContext = RendererContext.instance(new BeanContext.Page(pageContext), request);
+        if (getTestResult()) {
+            try {
+                RendererContext rendererContext = RendererContext.instance(context, request);
 
-            Clientlib.Type type = getType();
-            Clientlib clientlib = new Clientlib(request, path, type);
+                Clientlib.Type type = getType();
+                ClientlibRef ref = null;
 
-            if (clientlib.isValid()) {
-
-                JspWriter writer = this.pageContext.getOut();
-                ClientlibService service = this.sling.getScriptHelper().getService(ClientlibService.class);
-                service.renderClientlibLinks(clientlib, properties, writer, rendererContext);
-
-            } else {
-                String path = clientlib.getPath(this.path);
                 if (StringUtils.isNotBlank(path)) {
-                    ClientlibRef reference = new ClientlibRef(type, path, true, false);
-                    if (!rendererContext.isClientlibRendered(reference)) {
-                        ClientlibLink link = new ClientlibLink(clientlib);
-                        rendererContext.registerClientlibLink(link);
-                        JspWriter writer = this.pageContext.getOut();
-                        switch (type) {
-                            case link:
-                            case css:
-                                String rel = properties.get(ClientlibKey.PROP_REL);
-                                writer.write("<link rel=\"");
-                                writer.write(StringUtils.isNotBlank(rel) ? rel : "stylesheet");
-                                writer.write("\" href=\"");
-                                writer.write(link.getUrl(rendererContext));
-                                writer.write("\" />");
-                                break;
-                            case js:
-                                writer.write("<script type=\"text/javascript\" src=\"");
-                                writer.write(link.getUrl(rendererContext));
-                                writer.write("\"></script>");
-                                break;
-                            case img:
-                                writer.write("<img src=\"");
-                                writer.write(link.getUrl(rendererContext));
-                                writer.write("\"/>");
-                                break;
-                            default:
-                                break;
-                        }
-                    } else {
-                        LOG.warn("Clientlib (file) '" + path + "' already embedded - ignored here.");
-                    }
+                    ref = new ClientlibRef(type, path, false, null);
+                    LOG.debug("<cpn:clientlib.{} path={}/>", type, path);
+                } else if (StringUtils.isNotBlank(category)) {
+                    ref = ClientlibRef.forCategory(type, category, false, null);
+                    LOG.debug("<cpn:clientlib.{} category={}/>", type, category);
                 } else {
-                    LOG.warn("Clientlib (file) '" + this.path + "' not found or not accessible!");
+                    LOG.error("No path nor category attribute was given!");
                 }
+
+                ClientlibService service = context.getService(ClientlibService.class);
+                ClientlibElement clientlib = service.resolve(ref, request.getResourceResolver());
+
+                if (null != clientlib) { // if this is a clientlib or category
+                    JspWriter writer = this.pageContext.getOut();
+                    if (service.getClientlibConfig().getTagDebug()) {
+                        writer.println("<!-- cpn:clientlib." + type + " " + defaultIfNull(path, "") +
+                                " " + defaultIfNull(category, "") + " -->");
+                    }
+                    service.renderClientlibLinks(clientlib, writer, request, rendererContext);
+                } else {
+                    LOG.error("No clientlib found for path '{}' / category '{}' ", path, category);
+                }
+            } catch (IOException | RepositoryException e) {
+                LOG.error(e.getMessage(), e);
             }
-        } catch (IOException ioex) {
-            LOG.error(ioex.getMessage(), ioex);
+            super.doEndTag();
         }
-        super.doEndTag();
         return EVAL_PAGE;
     }
 }

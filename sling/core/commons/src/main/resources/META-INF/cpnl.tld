@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <taglib xmlns="http://java.sun.com/xml/ns/j2ee" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://java.sun.com/xml/ns/j2ee http://java.sun.com/xml/ns/j2ee/web-jsptaglibrary_2_0.xsd"
-    version="2.0">
+        xsi:schemaLocation="http://java.sun.com/xml/ns/j2ee http://java.sun.com/xml/ns/j2ee/web-jsptaglibrary_2_0.xsd"
+        version="2.0">
 
     <description>
         a collection of universal Sling related tags
@@ -12,6 +12,21 @@
 
     <tag>
         <description>
+            the tag to declare a resource bundle (I18N)
+        </description>
+        <name>bundle</name>
+        <tag-class>com.composum.sling.cpnl.BundleTag</tag-class>
+        <body-content>JSP</body-content>
+        <attribute>
+            <name>basename</name>
+            <required>true</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+    </tag>
+
+    <tag>
+        <description>
             Creates a component model from a given className
         </description>
         <name>component</name>
@@ -19,8 +34,16 @@
         <tei-class>com.composum.sling.cpnl.ComponentTagTEI</tei-class>
         <body-content>JSP</body-content>
         <attribute>
+            <description>deprecated: use 'var' instead of 'id'</description>
             <name>id</name>
-            <required>true</required>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <description>the variable name one of 'var' or 'id' must be declared</description>
+            <name>var</name>
+            <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
@@ -46,29 +69,71 @@
 
     <tag>
         <description>
-            Includes a clientlib reference (JS, CSS)
+            Includes a clientlib reference (JS, CSS etc).
+            Client libraries are folders of sling:resourceType composum/nodes/commons/clientlib containing
+            subfolders for each type, and declare dependencies to other client libraries. The tag can reference
+            multiple client libraries if they are referenced by category, and if the client library/-ies have dependencies
+            to other client libraries / resources. Thus, the tag can render as several link / script / img tags.
         </description>
         <name>clientlib</name>
         <tag-class>com.composum.sling.cpnl.ClientlibTag</tag-class>
         <body-content>JSP</body-content>
         <attribute>
+            <description>Path to the client library - folder of sling:resourceType composum/nodes/commons/clientlib. One of path or category is required.</description>
             <name>path</name>
-            <required>true</required>
+            <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <description>Category of client libraries to be included. One of path or category is required.</description>
+            <name>category</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <description>Type of rendered resources: css, js, link, img, png, jpg. Default: link.</description>
             <name>type</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
         <attribute>
-            <name>rel</name>
+            <description>An optional boolean (JSP-EL) expression for a conditional clientlib link.</description>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+    </tag>
+
+    <tag>
+        <description>
+            Generates a 'div' ans support the 'test' condition
+        </description>
+        <name>div</name>
+        <tag-class>com.composum.sling.cpnl.DivTag</tag-class>
+        <body-content>JSP</body-content>
+        <attribute>
+            <name>tagName</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+        <attribute>
+            <name>body</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+        <dynamic-attributes>true</dynamic-attributes>
     </tag>
 
     <tag>
@@ -103,16 +168,41 @@
             <type>java.lang.Boolean</type>
         </attribute>
         <attribute>
+            <name>format</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>title</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>alt</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
             <name>role</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
             <name>classes</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
         </attribute>
         <dynamic-attributes>true</dynamic-attributes>
     </tag>
@@ -143,10 +233,22 @@
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <name>target</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
             <name>map</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.Boolean</type>
+        </attribute>
+        <attribute>
+            <name>format</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
         </attribute>
         <attribute>
             <name>role</name>
@@ -155,10 +257,52 @@
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
             <name>classes</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+        <attribute>
+            <name>body</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+        <dynamic-attributes>true</dynamic-attributes>
+    </tag>
+
+    <tag>
+        <description>
+            Embeds an anchor link tag
+        </description>
+        <name>anchor</name>
+        <tag-class>com.composum.sling.cpnl.AnchorTag</tag-class>
+        <body-content>JSP</body-content>
+        <attribute>
+            <name>name</name>
+            <required>true</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
+            <name>classes</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
         </attribute>
         <dynamic-attributes>true</dynamic-attributes>
     </tag>
@@ -183,6 +327,7 @@
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
             <name>classes</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
@@ -205,6 +350,12 @@
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
         </attribute>
         <dynamic-attributes>true</dynamic-attributes>
     </tag>
@@ -229,6 +380,7 @@
             <type>java.lang.String</type>
         </attribute>
         <attribute>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
             <name>classes</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
@@ -239,6 +391,12 @@
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
         </attribute>
         <dynamic-attributes>true</dynamic-attributes>
     </tag>
@@ -260,7 +418,7 @@
             <name>value</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
-            <type>java.lang.String</type>
+            <type>java.lang.Object</type>
         </attribute>
         <attribute>
             <name>property</name>
@@ -275,10 +433,22 @@
             <type>java.lang.Boolean</type>
         </attribute>
         <attribute>
+            <name>i18n</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Boolean</type>
+        </attribute>
+        <attribute>
             <name>format</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
+        </attribute>
+        <attribute>
+            <name>locale</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.util.Locale</type>
         </attribute>
         <attribute>
             <name>tagName</name>
@@ -287,12 +457,27 @@
             <type>java.lang.String</type>
         </attribute>
         <attribute>
-            <name>tagClass</name>
+            <description>deprecated: use 'class' like a normal HTML tag</description>
+            <name>classes</name>
             <required>false</required>
             <rtexprvalue>true</rtexprvalue>
             <type>java.lang.String</type>
         </attribute>
+        <attribute>
+            <name>test</name>
+            <required>false</required>
+            <rtexprvalue>true</rtexprvalue>
+            <type>java.lang.Object</type>
+        </attribute>
+        <dynamic-attributes>true</dynamic-attributes>
     </tag>
+
+    <function>
+        <description>retrieves the translation for a string</description>
+        <name>i18n</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String i18n(org.apache.sling.api.SlingHttpServletRequest,java.lang.String)</function-signature>
+    </function>
 
     <function>
         <description>returns the absolute path for a child of a resource</description>
@@ -323,6 +508,27 @@
     </function>
 
     <function>
+        <description>Builds the URL for a repository path using the LinkUtil.getURL() method</description>
+        <name>externalUrl</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String externalUrl(org.apache.sling.api.SlingHttpServletRequest,java.lang.String)</function-signature>
+    </function>
+
+    <function>
+        <description>Builds the URL for a repository path using the LinkUtil.getMappedURL() method</description>
+        <name>mappedExternalUrl</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String unmappedExternalUrl(org.apache.sling.api.SlingHttpServletRequest,java.lang.String)</function-signature>
+    </function>
+
+    <function>
+        <description>Builds the URL for a repository path using the LinkUtil.getUNappedURL() method</description>
+        <name>unmappedExternalUrl</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String unmappedExternalUrl(org.apache.sling.api.SlingHttpServletRequest,java.lang.String)</function-signature>
+    </function>
+
+    <function>
         <description>transforms a string value for rendering (does nothing)</description>
         <name>value</name>
         <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
@@ -337,10 +543,17 @@
     </function>
 
     <function>
+        <description>transforms text of a rich text value as html for a tag attribute (encodes quotes)</description>
+        <name>attr</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String attr(org.apache.sling.api.SlingHttpServletRequest,java.lang.String,int)</function-signature>
+    </function>
+
+    <function>
         <description>transforms a string value for rich text (HTML) rendering</description>
         <name>rich</name>
         <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
-        <function-signature>java.lang.String rich(java.lang.String)</function-signature>
+        <function-signature>java.lang.String rich(org.apache.sling.api.SlingHttpServletRequest,java.lang.String)</function-signature>
     </function>
 
     <function>
@@ -355,6 +568,20 @@
         <name>script</name>
         <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
         <function-signature>java.lang.String script(java.lang.String)</function-signature>
+    </function>
+
+    <function>
+        <description>transforms a string value for style rendering</description>
+        <name>style</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String style(java.lang.String)</function-signature>
+    </function>
+
+    <function>
+        <description>encapsulates a text with CDATA</description>
+        <name>cdata</name>
+        <function-class>com.composum.sling.cpnl.CpnlElFunctions</function-class>
+        <function-signature>java.lang.String cdata(java.lang.String)</function-signature>
     </function>
 
 </taglib>

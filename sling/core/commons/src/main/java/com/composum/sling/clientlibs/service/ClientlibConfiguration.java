@@ -2,9 +2,9 @@ package com.composum.sling.clientlibs.service;
 
 public interface ClientlibConfiguration {
 
-    // CSS configuration
+    boolean getDebug();
 
-    boolean getCssDebug();
+    // CSS configuration
 
     boolean getCssMinimize();
 
@@ -13,16 +13,6 @@ public interface ClientlibConfiguration {
     String getCssTemplate();
 
     // JS configuration
-
-    boolean getJavascriptDebug();
-
-    boolean getJavascriptMinimize();
-
-    boolean getJavascriptMunge();
-
-    boolean getJavascriptOptimize();
-
-    int getJavascriptLineBreak();
 
     String getJavascriptTemplate();
 
@@ -34,6 +24,8 @@ public interface ClientlibConfiguration {
 
     boolean getMapClientlibURLs();
 
+    boolean getUseMinifiedFiles();
+
     boolean getGzipEnabled();
 
     String getCacheRoot();
@@ -41,4 +33,14 @@ public interface ClientlibConfiguration {
     int getThreadPoolMin();
 
     int getThreadPoolMax();
+
+    /** General - Resolver cachetime : the time (in seconds) the clientlib resolver caches the locations of all client libraries for a category. <=0 means no caching. */
+    int getResolverCachetime();
+
+    /** Inserts HTML comments with the client libraries that have been called up into the page */
+    boolean getTagDebug();
+
+    /** Renders clientlib again if a no-cache header is received - mainly for debugging purposes. Changes in the JS / CSS files automatically lead to re-rendering the clientlib. */
+    boolean getRerenderOnNocache();
+
 }

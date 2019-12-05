@@ -19,9 +19,9 @@
         };
 
         pckgmgr.setCurrentPath = function (path) {
-            if (!pckgmgr.current || pckgmgr.current.path != path) {
+            if (!pckgmgr.current || pckgmgr.current.path !== path) {
                 if (path) {
-                    core.getJson('/bin/cpm/package.tree.json' + path, undefined, undefined,
+                    core.getJson('/bin/cpm/package.tree.json' + core.encodePath(path), undefined, undefined,
                         _.bind(function (result) {
                             var pathMatch = pckgmgr.pathPattern.exec(path);
                             pckgmgr.current = {
@@ -33,13 +33,14 @@
                                 version: result.responseJSON.definition ? result.responseJSON.definition.version : undefined,
                                 // version: pathMatch ? pathMatch[4] : undefined,
                                 extension: pathMatch ? pathMatch[5] : undefined,
+                                includeVersions: result.responseJSON.definition ? result.responseJSON.definition.includeVersions : undefined,
                                 node: result.responseJSON,
                                 viewUrl: core.getContextUrl('/bin/packages.view.html'
                                     + window.core.encodePath(path)),
                                 nodeUrl: core.getContextUrl('/bin/packages.html'
                                     + window.core.encodePath(path)),
                                 downloadUrl: pathMatch
-                                    ? core.getContextUrl('/bin/cpm/package.download.zip' + path)
+                                    ? core.getContextUrl('/bin/cpm/package.download.zip' + core.encodePath(path))
                                     : ''
                             };
                             core.console.getProfile().set('pckgmgr', 'current', path);
@@ -97,7 +98,7 @@
                 return '/bin/cpm/package.tree.json' + path;
             },
 
-            onNodeSelected: function (path, node, element) {
+            onNodeSelected: function (path, node) {
                 $(document).trigger("path:select", [path]);
             }
         });

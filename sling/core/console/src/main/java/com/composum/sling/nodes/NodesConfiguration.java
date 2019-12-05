@@ -1,8 +1,8 @@
 package com.composum.sling.nodes;
 
 import com.composum.sling.core.filter.ResourceFilter;
-import com.composum.sling.core.servlet.AbstractServiceServlet;
 
+import javax.servlet.Servlet;
 import java.util.Dictionary;
 
 /**
@@ -13,6 +13,7 @@ public interface NodesConfiguration {
     String ERRORPAGE_STATUS = "errorpage.status";
     String ERRORPAGES_PATH = "errorpages.path";
 
+    String CONSOLE_ACCESS_CHECK = "console.access.check";
     String CONSOLE_CATEGORIES_KEY = "console.categories";
 
     long QUERY_RESULT_LIMIT_DEFAULT = 500L;
@@ -24,21 +25,24 @@ public interface NodesConfiguration {
     String TREE_INTERMEDIATE_FILTER_KEY = "tree.intermediate.filter";
     String REFERENCEABLE_NODES_FILTER_KEY = "node.referenceable.filter";
     String ORDERABLE_NODES_FILTER_KEY = "node.orderable.filter";
+    String SOURCE_NODES_FILTER_KEY = "node.source.filter";
 
-    String SYSTEM_SERVLET_ENABLED = "system.servlet.enabled";
+    String SOURCE_SERVLET_ENABLED = "source.servlet.enabled";
+    String SOURCE_UPDATE_SERVLET_ENABLED = "sourceupdate.servlet.enabled";
     String PACKAGE_SERVLET_ENABLED = "package.servlet.enabled";
     String SECURITY_SERVLET_ENABLED = "security.servlet.enabled";
     String NODE_SERVLET_ENABLED = "node.servlet.enabled";
     String PROPERTY_SERVLET_ENABLED = "property.servlet.enabled";
     String VERSION_SERVLET_ENABLED = "version.servlet.enabled";
+    String USER_MANAGEMENT_SERVLET_ENABLED = "usermanagement.servlet.enabled";
+
+    boolean checkConsoleAccess();
 
     String[] getConsoleCategories();
 
     long getQueryResultLimit();
 
-    String[] getQueryTemplates();
-
-    boolean isEnabled(AbstractServiceServlet servlet);
+    boolean isEnabled(Servlet servlet);
 
     ResourceFilter getPageNodeFilter();
 
@@ -49,6 +53,8 @@ public interface NodesConfiguration {
     ResourceFilter getReferenceableNodesFilter();
 
     ResourceFilter getOrderableNodesFilter();
+
+    ResourceFilter getSourceNodesFilter();
 
     Dictionary getProperties();
 }

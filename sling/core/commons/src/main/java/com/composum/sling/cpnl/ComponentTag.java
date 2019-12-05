@@ -1,7 +1,13 @@
 package com.composum.sling.cpnl;
 
-import com.composum.sling.core.SlingBean;
 import com.composum.sling.core.BeanContext;
+import com.composum.sling.core.SlingBean;
+import com.composum.sling.core.bean.BeanFactory;
+import com.composum.sling.core.bean.SlingBeanFactory;
+import com.composum.sling.core.util.SlingResourceUtil;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.sling.api.resource.Resource;
+import org.osgi.framework.InvalidSyntaxException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -10,6 +16,7 @@ import javax.inject.Named;
 import javax.servlet.jsp.JspException;
 import javax.servlet.jsp.PageContext;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,21 +26,18 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class ComponentTag extends CpnlBodyTagSupport {
 
-    private static final Logger log = LoggerFactory.getLogger(ComponentTag.class);
+    private static final Logger LOG = LoggerFactory.getLogger(ComponentTag.class);
 
-    private String var;
-    private String type;
-    private Integer varScope;
-    private Boolean replace;
+    protected String var;
+    protected String type;
+    protected Integer varScope;
+    protected Boolean replace;
 
-    protected BeanContext context;
     protected SlingBean component;
-    protected Object replacedValue;
-
     private transient Class<? extends SlingBean> componentType;
+    private static final Map<Class<? extends SlingBean>, Field[]> fieldCache = new ConcurrentHashMap<>();
 
-    private static Map<Class<? extends SlingBean>, Field[]> fieldCache = new ConcurrentHashMap<Class<? extends SlingBean>, Field[]>();
-
+    protected ArrayList<Map<String, Object>> replacedAttributes;
     public static final Map<String, Integer> SCOPES = new HashMap<>();
 
     static {
@@ -49,7 +53,7 @@ public class ComponentTag extends CpnlBodyTagSupport {
         varScope = null;
         replace = null;
         component = null;
-        replacedValue = null;
+        replacedAttributes = null;
         componentType = null;
         super.clear();
     }
@@ -57,19 +61,20 @@ public class ComponentTag extends CpnlBodyTagSupport {
     @Override
     public int doStartTag() throws JspException {
         super.doStartTag();
-        context = new BeanContext.Page(pageContext);
         if (getVar() != null) {
             try {
-                if ((replacedValue = available()) == null || getReplace()) {
+                if (available() == null || getReplace()) {
                     component = createComponent();
-                    pageContext.setAttribute(getVar(), component, getVarScope());
+                    setAttribute(getVar(), component, getVarScope());
                 }
             } catch (ClassNotFoundException ex) {
-                log.error("Class not found: " + this.type, ex);
+                LOG.error("Class not found: " + this.type, ex);
             } catch (IllegalAccessException ex) {
-                log.error("Could not access: " + this.type, ex);
+                LOG.error("Could not access: " + this.type, ex);
             } catch (InstantiationException ex) {
-                log.error("Could not instantiate: " + this.type, ex);
+                LOG.error("Could not instantiate: " + this.type, ex);
+            } catch (IllegalArgumentException ex) {
+                LOG.error("Could not adapt to: " + this.type, ex);
             }
         }
         return EVAL_BODY_INCLUDE;
@@ -77,15 +82,7 @@ public class ComponentTag extends CpnlBodyTagSupport {
 
     @Override
     public int doEndTag() throws JspException {
-        if (getVar() != null) {
-            if (replacedValue != null) {
-                if (component != null) {
-                    pageContext.setAttribute(getVar(), replacedValue, getVarScope());
-                }
-            } else {
-                pageContext.removeAttribute(getVar(), getVarScope());
-            }
-        }
+        restoreAttributes();
         clear();
         super.doEndTag();
         return EVAL_PAGE;
@@ -94,6 +91,7 @@ public class ComponentTag extends CpnlBodyTagSupport {
     /**
      * Configure an var / variable name to store the component in the context
      */
+    @Override
     public void setId(String id) {
         setVar(id);
     }
@@ -125,8 +123,13 @@ public class ComponentTag extends CpnlBodyTagSupport {
      * for the component instance attribute
      */
     public void setScope(String key) {
-        Integer value = key != null ? SCOPES.get(key.toLowerCase()) : null;
-        varScope = value != null ? value : null;
+        varScope = null;
+        if (StringUtils.isNotBlank(key)) {
+            varScope = SCOPES.get(key.toLowerCase());
+            if (varScope == null) {
+                LOG.error("Invalid scope {} when rendering {}", key, SlingResourceUtil.getPath(resource));
+            }
+        }
     }
 
     public void setVarScope(Integer value) {
@@ -144,7 +147,7 @@ public class ComponentTag extends CpnlBodyTagSupport {
      *             <code>true</code> - replace each potentially existing instance
      *             (default in 'page' context).
      */
-    public void setReplace(boolean flag) {
+    public void setReplace(Boolean flag) {
         this.replace = flag;
     }
 
@@ -155,9 +158,13 @@ public class ComponentTag extends CpnlBodyTagSupport {
     /**
      * get the content type class object
      */
+    @SuppressWarnings("unchecked")
     protected Class<? extends SlingBean> getComponentType() throws ClassNotFoundException {
         if (componentType == null) {
-            componentType = (Class<? extends SlingBean>) sling.getType(getType());
+            String type = getType();
+            if (StringUtils.isNotBlank(type)) {
+                componentType = (Class<? extends SlingBean>) context.getType(type);
+            }
         }
         return componentType;
     }
@@ -187,21 +194,47 @@ public class ComponentTag extends CpnlBodyTagSupport {
         SlingBean component = null;
         Class<? extends SlingBean> type = getComponentType();
         if (type != null) {
-            component = type.newInstance();
-            initialize(component);
-            injectFieldDependecies(component);
+            BeanFactory factoryRule = type.getAnnotation(BeanFactory.class);
+            Resource modelResource = getModelResource(context);
+            if (factoryRule != null) {
+                SlingBeanFactory factory = context.getService(factoryRule.serviceClass());
+                if (factory != null) {
+                    return factory.createBean(context, modelResource, type);
+                }
+            }
+            BeanContext baseContext = context.withResource(modelResource);
+            component = baseContext.adaptTo(type);
+            if (component == null) {
+                throw new IllegalArgumentException("Could not adapt " + modelResource + " to " + type);
+            }
+            injectServices(component);
+            additionalInitialization(component);
         }
         return component;
     }
 
-    protected void initialize(SlingBean component) {
-        component.initialize(new BeanContext.Page(pageContext));
+    /**
+     * Hook that can change the resource used for {@link #createComponent()} if necessary. This implementation just uses
+     * the resource from the {@link #context} ( {@link BeanContext#getResource()} ).
+     */
+    public Resource getModelResource(BeanContext context) {
+        return context.getResource();
     }
 
     /**
-     * define attributes marked for injection in a new component instance
+     * Hook for perform additional initialization of the component. When called, the fields of the component are already
+     * initialized with Sling-Models or {@link SlingBean#initialize(BeanContext)} / {@link
+     * SlingBean#initialize(BeanContext, Resource)}.
      */
-    protected void injectFieldDependecies(SlingBean component) throws IllegalAccessException {
+    protected void additionalInitialization(SlingBean component) {
+        // empty
+    }
+
+    /**
+     * Inject OSGI services for attributes marked for injection in a new component instance, if not already
+     * initialized e.g. by Sling-Models.
+     */
+    protected void injectServices(SlingBean component) throws IllegalAccessException {
         final Field[] declaredFields;
         if (fieldCache.containsKey(component.getClass())) {
             declaredFields = fieldCache.get(component.getClass());
@@ -210,18 +243,20 @@ public class ComponentTag extends CpnlBodyTagSupport {
             fieldCache.put(component.getClass(), declaredFields);
         }
         for (Field field : declaredFields) {
-            if (!field.isAccessible()) {
-                field.setAccessible(true);
-            }
             if (field.isAnnotationPresent(Inject.class)) {
-                String filter = null;
-                if (field.isAnnotationPresent(Named.class)) {
-                    Named name = field.getAnnotation(Named.class);
-                    filter = "(service.pid=" + name.value() + ")";
+                if (!field.isAccessible()) {
+                    field.setAccessible(true);
                 }
-                Class<?> typeOfField = field.getType();
-                Object o = retrieveFirstServiceOfType(typeOfField, filter);
-                field.set(component, o);
+                if (null == field.get(component)) { // if not initialized already by Sling-Models
+                    String filter = null;
+                    if (field.isAnnotationPresent(Named.class)) {
+                        Named name = field.getAnnotation(Named.class);
+                        filter = "(service.pid=" + name.value() + ")";
+                    }
+                    Class<?> typeOfField = field.getType();
+                    Object o = retrieveFirstServiceOfType(typeOfField, filter);
+                    field.set(component, o);
+                }
             }
         }
     }
@@ -230,7 +265,60 @@ public class ComponentTag extends CpnlBodyTagSupport {
      *
      */
     protected <T> T retrieveFirstServiceOfType(Class<T> serviceType, String filter) {
-        T[] services = sling.getScriptHelper().getServices(serviceType, filter);
+        T[] services = null;
+        try {
+            services = context.getServices(serviceType, filter);
+        } catch (InvalidSyntaxException ex) {
+            LOG.error(ex.getMessage(), ex);
+        }
         return services == null ? null : services[0];
+    }
+
+    // attribute replacement registry...
+
+    /**
+     * retrieves the registry for one scope
+     */
+    protected Map<String, Object> getReplacedAttributes(int scope) {
+        if (replacedAttributes == null) {
+            replacedAttributes = new ArrayList<>();
+        }
+        while (replacedAttributes.size() <= scope) {
+            replacedAttributes.add(new HashMap<String, Object>());
+        }
+        return replacedAttributes.get(scope);
+    }
+
+    /**
+     * each attribute set by a tag should use this method for attribute declaration;
+     * an existing value with the same key is registered and restored if the tag rendering ends
+     */
+    protected void setAttribute(String key, Object value, int scope) {
+        Map<String, Object> replacedInScope = getReplacedAttributes(scope);
+        if (!replacedInScope.containsKey(key)) {
+            Object current = pageContext.getAttribute(key, scope);
+            replacedInScope.put(key, current);
+        }
+        pageContext.setAttribute(key, value, scope);
+    }
+
+    /**
+     * restores all replaced values and removes all attributes declared in this tag
+     */
+    protected void restoreAttributes() {
+        if (replacedAttributes != null) {
+            for (int scope = 0; scope < replacedAttributes.size(); scope++) {
+                Map<String, Object> replaced = replacedAttributes.get(scope);
+                for (Map.Entry<String, Object> entry : replaced.entrySet()) {
+                    String key = entry.getKey();
+                    Object value = entry.getValue();
+                    if (value != null) {
+                        pageContext.setAttribute(key, value, scope);
+                    } else {
+                        pageContext.removeAttribute(key, scope);
+                    }
+                }
+            }
+        }
     }
 }

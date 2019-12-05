@@ -2,18 +2,21 @@ package com.composum.sling.clientlibs.processor;
 
 import com.composum.sling.clientlibs.handle.ClientlibLink;
 import com.composum.sling.clientlibs.handle.ClientlibRef;
+import com.composum.sling.clientlibs.handle.ClientlibResourceFolder;
+import com.composum.sling.clientlibs.service.ClientlibConfiguration;
 import com.composum.sling.clientlibs.service.ClientlibService;
 import com.composum.sling.core.BeanContext;
 import org.apache.sling.api.SlingHttpServletRequest;
-import org.apache.sling.api.scripting.SlingScriptHelper;
+import org.apache.sling.api.resource.ResourceResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
- * The context implementation for the clientlib ink rendering.
- * This context provides a registry to avoid clientlib duplicates.
+ * The context implementation for the clientlib link rendering, request scoped. This context provides a registry to
+ * avoid clientlib duplicates.
  */
 public class RendererContext {
 
@@ -30,62 +33,69 @@ public class RendererContext {
         return attribute;
     }
 
-    public final BeanContext context;
-    public final SlingHttpServletRequest request;
+    protected final Set<ClientlibLink> renderedClientlibs;
 
-    protected final HashSet<ClientlibLink> renderedClientlibs;
+    protected transient ResourceResolver resolver;
 
-    private transient SlingScriptHelper scriptHelper;
-    private transient ClientlibService clientlibService;
+    protected transient ClientlibService clientlibService;
 
     protected RendererContext(BeanContext context, SlingHttpServletRequest request) {
-        this.context = context;
-        this.request = request;
-        this.renderedClientlibs = new HashSet<>();
+        this.renderedClientlibs = new LinkedHashSet<>();
+        clientlibService = context.getService(ClientlibService.class);
+        resolver = request.getResourceResolver();
     }
 
+    /** Checks whether a referenced resource or client library is satisfied by an already rendered resource. */
     public boolean isClientlibRendered(ClientlibRef reference) {
         for (ClientlibLink link : renderedClientlibs) {
-            if (reference.use(link)) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("rendered: " + reference.path + " - using: " + reference.getUsedAlternative());
-                }
+            if (reference.isSatisfiedby(link)) {
+                LOG.debug("already rendered: {} by {}", reference, link.path);
                 return true;
             }
         }
         return false;
     }
 
-    public void registerClientlibLink(ClientlibLink link) {
-        if (true || !renderedClientlibs.contains(link)) {
-            renderedClientlibs.add(link);
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("registered: " + link);
-            }
+    /**
+     * Registers rendered resources / client libraries that have already been rendered for the current request, that is,
+     * over all clientlib tag calls of a request
+     *
+     * @param link   the element to be registered
+     * @param parent the element referencing it, for logging purposes
+     */
+    public void registerClientlibLink(ClientlibLink link, ClientlibResourceFolder parent) {
+        if (renderedClientlibs.contains(link)) {
+            // normally not critical - just a hint that something is included twice via various paths
+            LOG.debug("duplicate clientlib link {} being included from {} ", link, parent);
         } else {
-            LOG.error("duplicate clientlib link: " + link);
+            renderedClientlibs.add(link);
+            LOG.debug("registered {} referenced from {}", link, parent);
         }
     }
 
     public boolean mapClientlibURLs() {
-        return getClientlibService().mapClientlibURLs();
+        return getConfiguration().getMapClientlibURLs();
+    }
+
+    public boolean useMinifiedFiles() {
+        return getConfiguration().getUseMinifiedFiles();
     }
 
     public ClientlibService getClientlibService() {
-        if (clientlibService == null) {
-            clientlibService = getService(ClientlibService.class);
-        }
         return clientlibService;
     }
 
-    public SlingScriptHelper getScriptHelper() {
-        if (scriptHelper == null) {
-            scriptHelper = context.getAttribute("sling", SlingScriptHelper.class);
-        }
-        return scriptHelper;
+    public Set<ClientlibLink> getRenderedClientlibs() {
+        return renderedClientlibs;
     }
 
-    public <ServiceType> ServiceType getService(Class<ServiceType> type) {
-        return getScriptHelper().getService(type);
+    public ClientlibConfiguration getConfiguration() {
+        return getClientlibService().getClientlibConfig();
     }
+
+    public ResourceResolver getResolver() {
+        return resolver;
+    }
+
 }
+

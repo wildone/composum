@@ -1,18 +1,20 @@
 package com.composum.sling.nodes.console;
 
 import com.composum.sling.core.BeanContext;
+import com.composum.sling.core.CoreConfiguration;
 import com.composum.sling.nodes.NodesConfiguration;
 import com.composum.sling.core.ResourceHandle;
-import com.composum.sling.core.SlingHandle;
 import com.composum.sling.core.filter.ResourceFilter;
 import com.composum.sling.core.util.LinkUtil;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.builder.CompareToBuilder;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.apache.sling.api.resource.ValueMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.jcr.Session;
 import javax.jcr.query.Query;
 import java.util.ArrayList;
@@ -33,6 +35,7 @@ public class Consoles extends ConsolePage {
     public static final int ORDER_DEFAULT = 50;
 
     public static final String PROP_TARGET = "target";
+    public static final String PROP_DESCRIPTION = "description";
 
     public static final String PROP_PRECONDITION = "precondition";
     public static final String PRECONDITION_CLASS_AVAILABILITY = "class";
@@ -45,11 +48,9 @@ public class Consoles extends ConsolePage {
     }
 
     public static final String CONTENT_QUERY_BASE = "/jcr:root";
-    public static final String CONTENT_QUERY_RULE = "//content[@sling:resourceType='composum/nodes/console/page']";
-    public static final String CONTENT_QUERY_LIBS = CONTENT_QUERY_BASE + "/libs" + CONTENT_QUERY_RULE;
-    public static final String CONTENT_QUERY_APPS = CONTENT_QUERY_BASE + "/apps" + CONTENT_QUERY_RULE;
+    public static final String CONTENT_QUERY_RULE = "/content[@sling:resourceType='composum/nodes/console/page']";
 
-    public class ConsoleFilter implements ResourceFilter {
+    public class ConsoleFilter extends ResourceFilter.AbstractResourceFilter {
 
         private final List<String> selectors;
 
@@ -68,8 +69,7 @@ public class Consoles extends ConsolePage {
                         String[] rule = StringUtils.split(precondition, ":");
                         PreconditionFilter filter = PRECONDITION_FILTERS.get(rule[0]);
                         if (filter != null) {
-                            boolean accept = filter.accept(context, resource, rule.length > 0 ? rule[1] : null);
-                            return accept;
+                            return filter.accept(context, resource, rule.length > 1 ? rule[1] : null);
                         }
                     }
                     return true;
@@ -84,7 +84,7 @@ public class Consoles extends ConsolePage {
         }
 
         @Override
-        public void toString(StringBuilder builder) {
+        public void toString(@Nonnull StringBuilder builder) {
             builder.append("console(").append(StringUtils.join(selectors, ',')).append(")");
         }
     }
@@ -111,10 +111,14 @@ public class Consoles extends ConsolePage {
             return handle.getPath();
         }
 
+        public String getDescription() {
+            return handle.getProperty(PROP_DESCRIPTION, "");
+        }
+
         public String getUrl() {
             String suffix = getRequest().getRequestPathInfo().getSuffix();
             return LinkUtil.getUnmappedUrl(getRequest(), getPath())
-                    .replaceAll("\\$\\{path\\}", StringUtils.isNotBlank(suffix) ? suffix : "");
+                    .replaceAll("\\$\\{path}", StringUtils.isNotBlank(suffix) ? suffix : "");
         }
 
         public String getLinkAttributes() {
@@ -128,7 +132,10 @@ public class Consoles extends ConsolePage {
 
         @Override
         public int compareTo(Console other) {
-            return order - other.order;
+            CompareToBuilder builder = new CompareToBuilder();
+            builder.append(order, other.order);
+            builder.append(getPath(), other.getPath());
+            return builder.toComparison();
         }
     }
 
@@ -152,8 +159,12 @@ public class Consoles extends ConsolePage {
 
     public String getCurrentUser() {
         Session session = getSession();
-        String userId = session.getUserID();
-        return userId;
+        return session.getUserID();
+    }
+
+    public String getLogoutUrl() {
+        CoreConfiguration service = this.context.getService(CoreConfiguration.class);
+        return service != null ? service.getLogoutUrl() : null;
     }
 
     public String getWorkspaceName() {
@@ -163,8 +174,10 @@ public class Consoles extends ConsolePage {
     public List<Console> getConsoles() {
         if (consoles == null) {
             consoles = new ArrayList<>();
-            findConsoles(consoles, CONTENT_QUERY_APPS);
-            findConsoles(consoles, CONTENT_QUERY_LIBS);
+            ResourceResolver resolver = getResolver();
+            for (String path : resolver.getSearchPath()) {
+                findConsoles(consoles, CONTENT_QUERY_BASE + path + CONTENT_QUERY_RULE);
+            }
             Collections.sort(consoles);
         }
         return consoles;
@@ -173,6 +186,7 @@ public class Consoles extends ConsolePage {
     protected void findConsoles(List<Console> consoles, String query) {
         ResourceResolver resolver = getResolver();
 
+        @SuppressWarnings("deprecation")
         Iterator<Resource> consoleContentResources = resolver.findResources(query, Query.XPATH);
         if (consoleContentResources != null) {
 
@@ -216,8 +230,7 @@ public class Consoles extends ConsolePage {
         public boolean accept(BeanContext context, Resource resource, String className) {
             boolean classAvailable = false;
             try {
-                SlingHandle slingHandle = new SlingHandle(context);
-                slingHandle.getType(className);
+                context.getType(className);
                 classAvailable = true;
             } catch (Exception ex) {
                 LOG.warn("precondition check failed: " + ex.getMessage());

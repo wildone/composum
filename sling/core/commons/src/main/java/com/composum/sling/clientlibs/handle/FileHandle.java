@@ -1,9 +1,9 @@
 package com.composum.sling.clientlibs.handle;
 
 import com.composum.sling.core.ResourceHandle;
-import com.composum.sling.core.util.PropertyUtil;
 import com.composum.sling.core.util.ResourceUtil;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.sling.api.resource.ModifiableValueMap;
 import org.apache.sling.api.resource.Resource;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.apache.sling.api.resource.ValueMap;
@@ -21,7 +21,7 @@ import java.util.Map;
 
 public class FileHandle {
 
-    private Logger LOG = LoggerFactory.getLogger(FileHandle.class);
+    private final Logger LOG = LoggerFactory.getLogger(FileHandle.class);
 
     public static final Map<String, Object> CRUD_FILE_PROPS;
     public static final Map<String, Object> CRUD_CONTENT_PROPS;
@@ -47,10 +47,12 @@ public class FileHandle {
         this.content = retrieveContent();
     }
 
+    /** Handle to the content node of the file; not null. */
     public ResourceHandle getContent() {
         return content;
     }
 
+    /** Handle to the main node of the file; not null. */
     public ResourceHandle getResource() {
         return resource;
     }
@@ -98,7 +100,10 @@ public class FileHandle {
     public Calendar getLastModified() {
         if (lastModified == null) {
             if (content.isValid()) {
-                lastModified = content.getProperty(ResourceUtil.PROP_LAST_MODIFIED, Calendar.class);
+                lastModified = content.getLastModified();
+            }
+            if (null == lastModified && resource.isValid()) {
+                lastModified = resource.getLastModified();
             }
         }
         return lastModified;
@@ -117,7 +122,7 @@ public class FileHandle {
         return size;
     }
 
-    public InputStream getStream() throws RepositoryException {
+    public InputStream getStream() {
         InputStream stream = null;
         if (content.isValid()) {
             ValueMap values = content.adaptTo(ValueMap.class);
@@ -126,10 +131,10 @@ public class FileHandle {
         return stream;
     }
 
-    public void storeContent(InputStream stream) throws RepositoryException {
+    public void storeContent(InputStream stream) {
         if (content.isValid()) {
-            Node node = content.adaptTo(Node.class);
-            PropertyUtil.setProperty(node, ResourceUtil.PROP_DATA, stream);
+            ModifiableValueMap values = content.adaptTo(ModifiableValueMap.class);
+            values.put(ResourceUtil.PROP_DATA, stream);
         }
     }
 
@@ -181,5 +186,10 @@ public class FileHandle {
                 extension = "";
             }
         }
+    }
+
+    @Override
+    public String toString() {
+        return "FileHandle, " + (isValid() ? resource.getPath() : ("<invalid: " + resource + ">"));
     }
 }

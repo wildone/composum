@@ -73,7 +73,7 @@ public class NodeUtil {
     }
 
     /**
-     * FIXME(rw,2015-04-22) not useful in the core layer
+     * TODO(rw,2015-04-22) not useful in the core layer
      *
      * @param name
      * @return
@@ -98,5 +98,14 @@ public class NodeUtil {
             name = StringEscapeUtils.escapeEcmaScript(name); // prevent from scripting in names
         }
         return name;
+    }
+
+    public static boolean isNodeType (Node node, String... nodeType) throws RepositoryException {
+        for (String type : nodeType) {
+            if (node.isNodeType(type)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
